@@ -25,7 +25,7 @@ A program **kizárólag Firefox böngészőmotorral működik**.
 
 Nem szükséges külön Firefoxot telepíteni: az első indításkor a Playwright automatikusan letölti a saját, kompatibilis Firefox buildjét.
 
-A program jelenlegi verziója **nem támogatja a Chromium, Google Chrome vagy Microsoft Edge böngészőmotorokat**. Ennek oka, hogy a Lidl bejelentkezési oldala az automatizált Chromium-alapú munkameneteket egyes esetekben korlátozza.
+A program jelenlegi verziója **nem támogatja a Chromium, Google Chrome böngészőmotorokat**. Ennek oka, hogy a Lidl bejelentkezési oldala az automatizált Chromium-alapú munkameneteket egyes esetekben korlátozza.
 
 A letöltött Playwright Firefox külön, tartós profilt használ, ezért a meglévő saját Firefox-profilodat nem módosítja.
 
