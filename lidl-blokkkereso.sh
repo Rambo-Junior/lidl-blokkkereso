@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 set -Eeuo pipefail
 
-# V2.6: blokkösszeg/tételszám javítása a mentett nyugta HTML-ből; a 0/hiányzó API-metaadat nem ír felül jó helyi adatot.
+# V2.8.1: a normál Firefox meglévő Lidl-munkamenetét használja; Playwright és külön jelszótárolás nélkül.
+# A Firefox cookies.sqlite fájlját csak ideiglenes másolatból olvassa, a Lidl-cookie-kat nem menti tartósan.
 
 APP_ID="lidl-blokkkereso"
 APP_NAME="Lidl blokk- és termékkereső"
-APP_VERSION="2.7.0"
+APP_VERSION="2.8.1"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/${APP_ID}"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/${APP_ID}"
-VENV_DIR="$DATA_DIR/venv"
 PY_APP="$CACHE_DIR/lidl_app.py"
 INSTALL_PATH="$HOME/.local/bin/$APP_ID"
 DESKTOP_FILE="$HOME/.local/share/applications/$APP_ID.desktop"
@@ -39,8 +40,9 @@ Terminal=true
 Categories=Utility;Office;
 StartupNotify=true
 EOF
-  command -v update-desktop-database >/dev/null 2>&1 && \
+  if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+  fi
   info "Telepítve: $INSTALL_PATH"
   info "Az alkalmazásmenüben keresd: $APP_NAME"
   exit 0
@@ -48,8 +50,9 @@ EOF
 
 uninstall_desktop() {
   rm -f -- "$INSTALL_PATH" "$DESKTOP_FILE"
-  command -v update-desktop-database >/dev/null 2>&1 && \
+  if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+  fi
   info "Az indító eltávolítva. A helyi adatbázis megmaradt itt: $DATA_DIR"
   exit 0
 }
@@ -65,8 +68,9 @@ case "${1:-}" in
     cat <<'EOF'
 Lidl blokk- és termékkereső – nem hivatalos közösségi eszköz.
 Nem áll kapcsolatban a Lidl-lel, és a Lidl nem támogatja vagy hagyta jóvá.
-A program a felhasználó saját Lidl-fiókjával, saját gépén működik.
-A helyi index és hitelesítőadatok a felhasználó saját profiljában maradnak.
+A program a felhasználó normál Firefoxában meglévő Lidl-munkamenetet használja.
+Nem tárol Lidl-jelszót; a Lidl-cookie-kat csak ideiglenes másolatból olvassa.
+A helyi blokkindex a felhasználó saját profiljában marad.
 Licenc: MIT
 EOF
     exit 0
@@ -99,83 +103,56 @@ EOF
     ;;
 esac
 
-command -v python3 >/dev/null 2>&1 || err "A python3 nincs telepítve. Ubuntu/Debian: sudo apt install python3 python3-venv"
-
-if [[ ! -x "$VENV_DIR/bin/python" ]]; then
-  info "Első indítás: elkészítem a saját Python-környezetet…"
-  if ! python3 -m venv "$VENV_DIR"; then
-    err "Nem sikerült Python virtuális környezetet létrehozni. Ubuntu/Debian: sudo apt install python3-venv"
-  fi
-fi
-
-PYTHON="$VENV_DIR/bin/python"
-PIP="$VENV_DIR/bin/pip"
-
-if ! "$PYTHON" -c 'import playwright, keyring; from cryptography.fernet import Fernet' >/dev/null 2>&1; then
-  info "Első indítás: telepítem a böngésző- és hitelesítőmodulokat…"
-  "$PIP" install --disable-pip-version-check --upgrade pip setuptools wheel
-  "$PIP" install --disable-pip-version-check playwright keyring cryptography
-fi
-
-# A Chromium-alapú automatizált munkamenetet a Lidl belépési oldala
-# egyes gépeken korlátozza. A V2.3 ezért a Playwright saját Firefoxát használja.
-FIREFOX_EXEC="$($PYTHON - <<'PYFIREFOX'
-from pathlib import Path
-from playwright.sync_api import sync_playwright
-with sync_playwright() as p:
-    print(p.firefox.executable_path)
-PYFIREFOX
-)"
-
-if [[ ! -x "$FIREFOX_EXEC" ]]; then
-  info "Első Firefox-indítás: letöltöm a Playwright Firefox böngészőt…"
-  if ! "$VENV_DIR/bin/playwright" install firefox; then
-    err "A Playwright Firefox telepítése nem sikerült. Ellenőrizd az internetkapcsolatot, majd indítsd újra."
-  fi
-fi
-
-export LIDL_BROWSER_ENGINE="firefox"
+command -v python3 >/dev/null 2>&1 || err "A python3 nincs telepítve. Ubuntu/Debian: sudo apt install python3"
 
 # A Python-rész mindig újraírásra kerül, így a .sh frissítése automatikusan frissíti az alkalmazást is.
 awk '/^__LIDL_PYTHON_APP_BEGIN__$/ {found=1; next} /^__LIDL_PYTHON_APP_END__$/ {found=0} found {print}' "$0" > "$PY_APP"
 chmod 600 "$PY_APP"
 
-exec "$PYTHON" "$PY_APP" "$@"
-exit 0
+# Szándékosan lecseréljük a shell folyamatot a Python alkalmazásra.
+# shellcheck disable=SC2093
+exec python3 "$PY_APP" "$@"
 
+# A következő heredoc az awk által kinyert beágyazott Python alkalmazás.
+# Shell szempontból szándékosan nem végrehajtható.
+# shellcheck disable=SC2317
 : <<'__LIDL_PYTHON_PAYLOAD__'
 __LIDL_PYTHON_APP_BEGIN__
 from __future__ import annotations
 
 import argparse
-import base64
 import curses
 import datetime as dt
-import getpass
-import hashlib
 import html
 import json
 import locale
 import os
 import re
 import shutil
+import subprocess
 import sqlite3
 import sys
+import tempfile
 import textwrap
 import time
 import unicodedata
+import urllib.error
+import urllib.request
+import webbrowser
 from dataclasses import dataclass
 from html.parser import HTMLParser
+from http.cookiejar import Cookie, CookieJar
 from pathlib import Path
 from typing import Any, Iterable
 
-import keyring
-from cryptography.fernet import Fernet, InvalidToken
-from playwright.sync_api import BrowserContext, Page, Playwright, sync_playwright
 
 APP_NAME = "Lidl blokk- és termékkereső"
-APP_VERSION = "2.7.0"
+APP_VERSION = "2.8.1"
 BASE_URL = "https://www.lidl.hu"
+LOGIN_URL = (
+    BASE_URL
+    + "/mla/?country_code=hu&language=hu-HU&client_id=HungaryRetailClient"
+)
 HOME_URL = (
     BASE_URL
     + "/mre/purchase-history?client_id=HungaryRetailClient"
@@ -187,140 +164,24 @@ DETAIL_URL = BASE_URL + "/mre/purchase-detail?t={receipt_id}"
 
 DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "lidl-blokkkereso"
 DB_PATH = DATA_DIR / "lidl_receipts.sqlite3"
-PROFILE_DIR = DATA_DIR / "browser-profile-firefox"
-CREDENTIAL_FILE = DATA_DIR / "credentials.enc"
-AUTH_STATE_FILE = DATA_DIR / "auth-state.json"
-KEYRING_SERVICE = "lidl.blokkkereso.unofficial"
-BROWSER_ENGINE = os.environ.get("LIDL_BROWSER_ENGINE", "firefox")
-BROWSER_ENGINE_MARKER = DATA_DIR / "browser-engine.txt"
 CONCURRENCY = 1
 REQUEST_DELAY_SECONDS = 0.8
 MAX_REQUEST_RETRIES = 4
-AUTH_COOLDOWN_SECONDS = 0
-AUTOLOGIN_ATTEMPTS = 2
-AUTOLOGIN_RETRY_DELAY_SECONDS = 8
+HTTP_TIMEOUT_SECONDS = 45
+
+FIREFOX_ROOTS = (
+    Path.home() / ".mozilla/firefox",
+    Path.home() / "snap/firefox/common/.mozilla/firefox",
+    Path.home() / ".var/app/org.mozilla.firefox/.mozilla/firefox",
+)
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
 try:
     locale.setlocale(locale.LC_ALL, "")
 except locale.Error:
     pass
 
-
-
-class CredentialStore:
-    """Mentett Lidl-fiók: rendszerkulcstartó, ennek hiányában titkosított helyi fájl."""
-
-    USER_KEY = "lidl_username"
-    PASSWORD_KEY = "lidl_password"
-
-    @staticmethod
-    def _fallback_fernet() -> Fernet:
-        machine_id = "unknown-machine"
-        for candidate in (Path("/etc/machine-id"), Path("/var/lib/dbus/machine-id")):
-            try:
-                value = candidate.read_text(encoding="utf-8").strip()
-                if value:
-                    machine_id = value
-                    break
-            except OSError:
-                continue
-        material = f"{machine_id}|{os.getuid()}|{Path.home()}|{KEYRING_SERVICE}|v1".encode("utf-8")
-        return Fernet(base64.urlsafe_b64encode(hashlib.sha256(material).digest()))
-
-    @classmethod
-    def _keyring_usable(cls) -> bool:
-        try:
-            backend = keyring.get_keyring()
-            name = f"{backend.__class__.__module__}.{backend.__class__.__name__}".lower()
-            priority = float(getattr(backend, "priority", 0) or 0)
-            return priority > 0 and "fail" not in name and "null" not in name
-        except Exception:
-            return False
-
-    @classmethod
-    def save(cls, username: str, password: str) -> str:
-        username = username.strip()
-        if not username or not password:
-            raise ValueError("A felhasználónév és a jelszó nem lehet üres.")
-        if cls._keyring_usable():
-            try:
-                keyring.set_password(KEYRING_SERVICE, cls.USER_KEY, username)
-                keyring.set_password(KEYRING_SERVICE, cls.PASSWORD_KEY, password)
-                CREDENTIAL_FILE.unlink(missing_ok=True)
-                return "Linux rendszerkulcstartó"
-            except Exception:
-                pass
-        payload = json.dumps({"username": username, "password": password}, ensure_ascii=False).encode("utf-8")
-        CREDENTIAL_FILE.write_bytes(cls._fallback_fernet().encrypt(payload))
-        os.chmod(CREDENTIAL_FILE, 0o600)
-        return f"titkosított helyi fájl ({CREDENTIAL_FILE})"
-
-    @classmethod
-    def load(cls) -> tuple[str, str] | None:
-        if cls._keyring_usable():
-            try:
-                username = keyring.get_password(KEYRING_SERVICE, cls.USER_KEY)
-                password = keyring.get_password(KEYRING_SERVICE, cls.PASSWORD_KEY)
-                if username and password:
-                    return username, password
-            except Exception:
-                pass
-        if not CREDENTIAL_FILE.exists():
-            return None
-        try:
-            decrypted = cls._fallback_fernet().decrypt(CREDENTIAL_FILE.read_bytes())
-            data = json.loads(decrypted.decode("utf-8"))
-            username = str(data.get("username") or "").strip()
-            password = str(data.get("password") or "")
-            return (username, password) if username and password else None
-        except (OSError, InvalidToken, ValueError, json.JSONDecodeError):
-            return None
-
-    @classmethod
-    def delete(cls) -> None:
-        if cls._keyring_usable():
-            for key_name in (cls.USER_KEY, cls.PASSWORD_KEY):
-                try:
-                    keyring.delete_password(KEYRING_SERVICE, key_name)
-                except Exception:
-                    pass
-        CREDENTIAL_FILE.unlink(missing_ok=True)
-
-    @classmethod
-    def status(cls) -> str:
-        if not cls.load():
-            return "nincs mentett Lidl-fiók"
-        if cls._keyring_usable():
-            try:
-                if keyring.get_password(KEYRING_SERVICE, cls.USER_KEY):
-                    return "mentve a Linux rendszerkulcstartóban"
-            except Exception:
-                pass
-        return "mentve titkosított helyi fájlban"
-
-
-def save_credentials_interactive() -> bool:
-    print("\nLidl-fiók mentése")
-    print("A jelszó nem kerül bele magába a .sh fájlba.")
-    existing = CredentialStore.load()
-    default_user = existing[0] if existing else ""
-    prompt = f"Lidl e-mail [{default_user}]: " if default_user else "Lidl e-mail: "
-    username = input(prompt).strip() or default_user
-    password = getpass.getpass("Lidl jelszó: ")
-    if not username or not password:
-        print("Megszakítva: hiányzó felhasználónév vagy jelszó.")
-        return False
-    backend = CredentialStore.save(username, password)
-    print(f"A hitelesítési adatok elmentve: {backend}.")
-    return True
-
-
-def delete_credentials_interactive() -> None:
-    CredentialStore.delete()
-    print("A mentett Lidl-felhasználónév és jelszó törölve.")
 
 
 def normalize(value: Any) -> str:
@@ -751,37 +612,159 @@ class Database:
             self.connection.execute("DELETE FROM meta")
 
 
+class FirefoxSessionError(RuntimeError):
+    pass
+
+
+def discover_firefox_cookie_dbs() -> list[Path]:
+    """Megkeresi a szokásos Linux Firefox-profilok cookies.sqlite fájljait.
+
+    A LIDL_FIREFOX_PROFILE környezeti változóval konkrét profilkönyvtár vagy
+    cookies.sqlite fájl is megadható.
+    """
+    candidates: list[Path] = []
+    override = os.environ.get("LIDL_FIREFOX_PROFILE", "").strip()
+    if override:
+        selected = Path(override).expanduser()
+        candidates.append(selected if selected.name == "cookies.sqlite" else selected / "cookies.sqlite")
+
+    for root in FIREFOX_ROOTS:
+        if root.is_dir():
+            candidates.extend(root.glob("*/cookies.sqlite"))
+
+    unique: dict[str, Path] = {}
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                unique[str(candidate.resolve())] = candidate
+        except OSError:
+            continue
+
+    def mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    return sorted(unique.values(), key=mtime, reverse=True)
+
+
+def _read_lidl_cookie_rows(source: Path) -> list[tuple[Any, ...]]:
+    """A futó Firefox cookie-adatbázisát ideiglenes másolatból olvassa.
+
+    A WAL/SHM fájlokat is átmásolja, így a Firefox bezárása nem szükséges.
+    Cookie-érték soha nem kerül az alkalmazás saját adatkönyvtárába.
+    """
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            with tempfile.TemporaryDirectory(prefix="lidl-blokkkereso-firefox-") as temp_name:
+                temp_dir = Path(temp_name)
+                copied_db = temp_dir / "cookies.sqlite"
+                shutil.copy2(source, copied_db)
+                for suffix in ("-wal", "-shm"):
+                    sidecar = Path(str(source) + suffix)
+                    if sidecar.exists():
+                        shutil.copy2(sidecar, Path(str(copied_db) + suffix))
+
+                connection = sqlite3.connect(copied_db)
+                try:
+                    columns = {
+                        row[1]
+                        for row in connection.execute("PRAGMA table_info(moz_cookies)").fetchall()
+                    }
+                    origin_filter = " AND originAttributes = ''" if "originAttributes" in columns else ""
+                    query = (
+                        "SELECT name, value, host, path, expiry, isSecure, isHttpOnly "
+                        "FROM moz_cookies "
+                        "WHERE host LIKE '%lidl.hu' "
+                        "AND (expiry = 0 OR expiry > ?)" + origin_filter
+                    )
+                    return connection.execute(query, (int(time.time()),)).fetchall()
+                finally:
+                    connection.close()
+        except (OSError, sqlite3.Error) as error:
+            last_error = error
+            if attempt < 2:
+                time.sleep(0.15)
+    if last_error is not None:
+        raise last_error
+    return []
+
+
+def _cookie_jar(rows: list[tuple[Any, ...]]) -> CookieJar:
+    jar = CookieJar()
+    for name, value, host, path, expiry, secure, httponly in rows:
+        jar.set_cookie(
+            Cookie(
+                version=0,
+                name=str(name),
+                value=str(value),
+                port=None,
+                port_specified=False,
+                domain=str(host),
+                domain_specified=True,
+                domain_initial_dot=str(host).startswith("."),
+                path=str(path or "/"),
+                path_specified=True,
+                secure=bool(secure),
+                expires=int(expiry) if expiry else None,
+                discard=not bool(expiry),
+                comment=None,
+                comment_url=None,
+                rest={"HttpOnly": bool(httponly)},
+                rfc2109=False,
+            )
+        )
+    return jar
+
+
 @dataclass
-class BrowserSession:
-    playwright: Playwright
-    context: BrowserContext
-    page: Page
+class LidlHttpSession:
+    opener: Any
+    firefox_profile: Path
+    cookie_count: int
     last_request_at: float = 0.0
 
     @classmethod
-    def open(cls, playwright: Playwright, headless: bool) -> "BrowserSession":
-        kwargs: dict[str, Any] = {
-            "user_data_dir": str(PROFILE_DIR),
-            "headless": headless,
-            "locale": "hu-HU",
-            "viewport": {"width": 1280, "height": 900},
-            "slow_mo": 0 if headless else 120,
-            "firefox_user_prefs": {
-                "browser.sessionstore.resume_from_crash": False,
-                "browser.tabs.warnOnClose": False,
-                "dom.webnotifications.enabled": False,
-            },
-        }
-        context = playwright.firefox.launch_persistent_context(**kwargs)
-        page = context.pages[0] if context.pages else context.new_page()
-        page.set_default_timeout(45_000)
-        return cls(playwright, context, page)
+    def from_firefox(cls) -> "LidlHttpSession":
+        databases = discover_firefox_cookie_dbs()
+        if not databases:
+            raise FirefoxSessionError(
+                "Nem találok normál Firefox-profilt. A program a ~/.mozilla/firefox "
+                "(valamint Snap/Flatpak) profilokat keresi."
+            )
 
-    def close(self) -> None:
-        self.context.close()
+        checked: list[str] = []
+        for database in databases:
+            try:
+                rows = _read_lidl_cookie_rows(database)
+            except (OSError, sqlite3.Error) as error:
+                checked.append(f"{database.parent}: cookie-adatbázis hiba ({error})")
+                continue
+            if not rows:
+                checked.append(f"{database.parent}: nincs Lidl-cookie")
+                continue
 
-    def goto_home(self) -> None:
-        self.page.goto(HOME_URL, wait_until="domcontentloaded", timeout=90_000)
+            opener = urllib.request.build_opener(
+                urllib.request.HTTPCookieProcessor(_cookie_jar(rows))
+            )
+            session = cls(opener=opener, firefox_profile=database.parent, cookie_count=len(rows))
+            status, data, _, _ = session._fetch_json_once(API_LIST.format(page=1), paced=False)
+            if status == 200 and isinstance(data, dict) and isinstance(data.get("items"), list):
+                print(f"Firefox munkamenet: {database.parent}")
+                print(f"Lidl cookie: {len(rows)} · API: HTTP 200")
+                return session
+            checked.append(f"{database.parent}: {len(rows)} Lidl-cookie, API HTTP {status}")
+
+        detail = "\n".join(f"  - {line}" for line in checked[:8])
+        if detail:
+            detail = "\nEllenőrzött profilok:\n" + detail
+        raise FirefoxSessionError(
+            "Nem találok érvényes, bejelentkezett Lidl-munkamenetet a normál Firefoxban.\n"
+            "Nyisd meg a Firefoxot, jelentkezz be a Lidl-fiókodba, majd indítsd újra a frissítést."
+            + detail
+        )
 
     def _pace(self) -> None:
         elapsed = time.monotonic() - self.last_request_at
@@ -789,41 +772,48 @@ class BrowserSession:
         if wait_for > 0:
             time.sleep(wait_for)
 
-    def _fetch_json_once(self, url: str) -> tuple[int, Any, str, str]:
-        self._pace()
-        result = self.page.evaluate(
-            """
-            async (url) => {
-                try {
-                    const response = await fetch(url, {
-                        method: 'GET',
-                        credentials: 'include',
-                        headers: {Accept: 'application/json'}
-                    });
-                    const text = await response.text();
-                    let data = null;
-                    try { data = JSON.parse(text); } catch (_) {}
-                    return {
-                        status: response.status,
-                        data,
-                        text,
-                        finalUrl: response.url,
-                        retryAfter: response.headers.get('Retry-After') || ''
-                    };
-                } catch (error) {
-                    return {status: 0, data: null, text: String(error), finalUrl: '', retryAfter: ''};
-                }
-            }
-            """,
+    def _fetch_json_once(self, url: str, paced: bool = True) -> tuple[int, Any, str, str]:
+        if paced:
+            self._pace()
+        request = urllib.request.Request(
             url,
+            # Ugyanaz a minimális fejléckészlet, amellyel a normál Firefoxból
+            # kiolvasott Lidl-sessiont közvetlenül is sikeresen teszteltük.
+            # Ne küldjünk mesterséges Firefox-verziót vagy Referert: egyes
+            # Lidl-auth munkamenetek erre HTTP 401 választ adnak.
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0 Firefox",
+            },
         )
+        status = 0
+        text = ""
+        retry_after = ""
+        try:
+            with self.opener.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+                status = int(getattr(response, "status", 200))
+                text = response.read().decode("utf-8", errors="replace")
+                retry_after = str(response.headers.get("Retry-After") or "")
+        except urllib.error.HTTPError as error:
+            status = int(error.code)
+            try:
+                text = error.read().decode("utf-8", errors="replace")
+            except Exception:
+                text = str(error)
+            retry_after = str(error.headers.get("Retry-After") or "") if error.headers else ""
+        except urllib.error.URLError as error:
+            status = 0
+            text = str(error)
+        except OSError as error:
+            status = 0
+            text = str(error)
+
         self.last_request_at = time.monotonic()
-        return (
-            int(result["status"]),
-            result.get("data"),
-            str(result.get("text", "")),
-            str(result.get("retryAfter", "")),
-        )
+        try:
+            data: Any = json.loads(text)
+        except (ValueError, json.JSONDecodeError):
+            data = None
+        return status, data, text, retry_after
 
     def fetch_json(self, url: str) -> tuple[int, Any, str]:
         retryable = {0, 429, 500, 502, 503, 504}
@@ -846,273 +836,68 @@ class BrowserSession:
         return last_status, last_data, last_text
 
     def fetch_json_batch(self, urls: list[str]) -> list[dict[str, Any]]:
-        # Szándékosan soros: kevésbé terheli a Lidl API-ját, és kisebb a 429/503 esélye.
         results: list[dict[str, Any]] = []
         for url in urls:
             status, data, text = self.fetch_json(url)
             results.append({"url": url, "status": status, "data": data, "text": text})
         return results
 
-    def authenticated(self) -> bool:
-        """Gyors munkamenet-ellenőrzés.
 
-        Szándékosan nincs 1/2/4/8 mp-es API retry: ha a meglévő profilból az
-        első kérés nem használható, rögtön az autologin következik.
-        """
-        try:
-            self.goto_home()
-            status, data, _, _ = self._fetch_json_once(API_LIST.format(page=1))
-            return status == 200 and isinstance(data, dict) and isinstance(data.get("items"), list)
-        except Exception:
-            return False
+def ensure_http_session() -> LidlHttpSession:
+    print("Normál Firefox Lidl-munkamenetének ellenőrzése…")
+    return LidlHttpSession.from_firefox()
 
 
-class AuthTemporarilyUnavailable(RuntimeError):
-    pass
+def open_in_normal_firefox(url: str) -> None:
+    """Lehetőleg a rendszer normál Firefoxát használja, nem Playwrightot."""
+    for executable in ("firefox", "firefox-esr"):
+        path = shutil.which(executable)
+        if path:
+            try:
+                subprocess.Popen(
+                    [path, url],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                return
+            except OSError:
+                pass
+    webbrowser.open(url, new=2)
 
 
-def _read_auth_state() -> dict[str, Any]:
-    try:
-        data = json.loads(AUTH_STATE_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError, json.JSONDecodeError):
-        return {}
-
-
-def _write_auth_state(data: dict[str, Any]) -> None:
-    AUTH_STATE_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    os.chmod(AUTH_STATE_FILE, 0o600)
-
-
-def auth_cooldown_remaining() -> int:
-    state = _read_auth_state()
-    until = float(state.get("cooldown_until") or 0)
-    return max(0, int(until - time.time()))
-
-
-def mark_auth_failure(reason: str, seconds: int = AUTH_COOLDOWN_SECONDS) -> None:
-    _write_auth_state({
-        "cooldown_until": time.time() + seconds,
-        "reason": reason,
-        "failed_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
-    })
-
-
-def clear_auth_failure() -> None:
-    AUTH_STATE_FILE.unlink(missing_ok=True)
-
-
-def page_reports_auth_overload(page: Page) -> bool:
-    phrases = (
-        "túlterheltek vagyunk",
-        "kerjük, várj néhány percet",
-        "próbáld meg újra",
-        "too many requests",
-        "try again later",
-        "temporarily unavailable",
-    )
-    for frame in page.frames:
-        try:
-            body = normalize(frame.locator("body").inner_text(timeout=1500))
-        except Exception:
-            continue
-        if any(normalize(phrase) in body for phrase in phrases):
-            return True
-    return False
-
-
-def _first_visible(page: Page, selectors: list[str], timeout_ms: int = 12_000) -> Any | None:
-    deadline = time.monotonic() + timeout_ms / 1000
-    while time.monotonic() < deadline:
-        for frame in page.frames:
-            for selector in selectors:
-                try:
-                    locator = frame.locator(selector).first
-                    if locator.count() and locator.is_visible():
-                        return locator
-                except Exception:
-                    continue
-        page.wait_for_timeout(250)
-    return None
-
-
-def _click_first_visible(page: Page, selectors: list[str], timeout_ms: int = 5_000) -> bool:
-    locator = _first_visible(page, selectors, timeout_ms)
-    if locator is None:
-        return False
-    try:
-        locator.click()
-        return True
-    except Exception:
-        return False
-
-
-def try_saved_credentials_login(session: BrowserSession, username: str, password: str) -> bool:
-    page = session.page
-    session.goto_home()
-    page.wait_for_timeout(1500)
-    if page_reports_auth_overload(page):
-        raise AuthTemporarilyUnavailable("A Lidl belépési szolgáltatása átmenetileg korlátoz.")
-
-    _click_first_visible(page, [
-        "#onetrust-accept-btn-handler",
-        "button:has-text('Összes elfogadása')",
-        "button:has-text('Elfogadom')",
-        "button:has-text('Accept all')",
-    ], timeout_ms=1800)
-
-    email_selectors = [
-        "input[autocomplete='username']", "input[type='email']",
-        "input[name='email']", "input[name='Email']", "input[name='username']",
-        "input[id*='email' i]", "input[id*='user' i]",
-    ]
-    password_selectors = [
-        "input[autocomplete='current-password']", "input[type='password']",
-        "input[name='password']", "input[name='Password']", "input[id*='password' i]",
-    ]
-    submit_selectors = [
-        "button[type='submit']", "input[type='submit']",
-        "button:has-text('Bejelentkezés')", "button:has-text('Belépés')",
-        "button:has-text('Tovább')", "button:has-text('Folytatás')",
-        "button:has-text('Continue')", "button:has-text('Sign in')", "button:has-text('Log in')",
-    ]
-
-    email = _first_visible(page, email_selectors, timeout_ms=20_000)
-    if email is None:
-        if page_reports_auth_overload(page):
-            raise AuthTemporarilyUnavailable("A Lidl belépési szolgáltatása átmenetileg korlátoz.")
-        return False
-    email.fill(username)
-    page.wait_for_timeout(900)
-
-    password_field = _first_visible(page, password_selectors, timeout_ms=1200)
-    if password_field is None:
-        if not _click_first_visible(page, submit_selectors, timeout_ms=5000):
-            return False
-        page.wait_for_timeout(2400)
-        if page_reports_auth_overload(page):
-            raise AuthTemporarilyUnavailable("A Lidl túl sok belépési kísérlet miatt várakozást kér.")
-        password_field = _first_visible(page, password_selectors, timeout_ms=20_000)
-    if password_field is None:
-        return False
-
-    password_field.fill(password)
-    page.wait_for_timeout(1100)
-    if not _click_first_visible(page, submit_selectors, timeout_ms=5000):
-        try:
-            password_field.press("Enter")
-        except Exception:
-            return False
-
-    try:
-        page.wait_for_url(re.compile(r"^https://www\.lidl\.hu/.*"), timeout=45_000)
-    except Exception:
-        if page_reports_auth_overload(page):
-            raise AuthTemporarilyUnavailable("A Lidl belépési szolgáltatása átmenetileg korlátoz.")
-        return False
-
-    try:
-        session.goto_home()
-        status, data, _, _ = session._fetch_json_once(API_LIST.format(page=1))
-        ok = status == 200 and isinstance(data, dict) and isinstance(data.get("items"), list)
-        if ok:
-            clear_auth_failure()
-        return ok
-    except Exception:
-        return False
-
-def login_with_playwright(playwright: Playwright, unattended: bool = False) -> bool:
-    credentials = CredentialStore.load()
-    if credentials is None:
-        if unattended:
-            print("Nincs mentett Lidl-fiók. Mentsd el egyszer a c paranccsal vagy a --save-credentials kapcsolóval.")
-            return False
-        answer = input("\nNincs mentett Lidl-fiók. Elmented most a felhasználónevet és jelszót? [I/n] ").strip().lower()
-        if answer not in ("n", "nem", "no"):
-            save_credentials_interactive()
-            credentials = CredentialStore.load()
-
-    # A V2.4 nem használ 10/30 perces autologin-cooldownt. Egy frissítés során
-    # legfeljebb két egymást követő automatikus próbát tesz, köztük rövid várakozással.
-    clear_auth_failure()
-
-    print("\nMegnyitom a Lidl belépést egy külön, tartós Firefox-profilban.")
-    session = BrowserSession.open(playwright, headless=False)
-    try:
-        if credentials is not None:
-            username, password = credentials
-            last_error = "Az automatikus belépés nem sikerült."
-            for attempt in range(1, AUTOLOGIN_ATTEMPTS + 1):
-                print(f"Automatikus belépési próbálkozás {attempt}/{AUTOLOGIN_ATTEMPTS}…")
-                try:
-                    if try_saved_credentials_login(session, username, password):
-                        print("Automatikus belépés sikerült. A munkamenet megmarad.")
-                        return True
-                    last_error = "A belépési folyamat nem fejeződött be sikeresen."
-                except AuthTemporarilyUnavailable as error:
-                    last_error = str(error)
-                    print(last_error)
-
-                if attempt < AUTOLOGIN_ATTEMPTS:
-                    print(f"Várok {AUTOLOGIN_RETRY_DELAY_SECONDS} másodpercet, majd egyszer újrapróbálom…")
-                    page = session.page
-                    try:
-                        page.wait_for_timeout(AUTOLOGIN_RETRY_DELAY_SECONDS * 1000)
-                        page.goto(HOME_URL, wait_until="domcontentloaded", timeout=90_000)
-                        page.wait_for_timeout(1500)
-                    except Exception:
-                        time.sleep(AUTOLOGIN_RETRY_DELAY_SECONDS)
-
-            print(f"Mindkét automatikus belépési próbálkozás sikertelen. Utolsó hiba: {last_error}")
-            if unattended:
-                return False
-            print("Ha CAPTCHA vagy további ellenőrzés látszik, fejezd be kézzel a böngészőben.")
-        else:
-            session.goto_home()
-            print("Jelentkezz be kézzel a megnyíló böngészőablakban.")
-
-        while True:
-            input("\nSikeres belépés után térj vissza ide, és nyomj ENTER-t… ")
-            session.goto_home()
-            status, data, text, _ = session._fetch_json_once(API_LIST.format(page=1))
-            if status == 200 and isinstance(data, dict) and isinstance(data.get("items"), list):
-                clear_auth_failure()
-                print("Belépés rendben. A munkamenet megmarad a következő indításokra.")
-                return True
-            print(f"Még nem látom a bejelentkezett munkamenetet (HTTP {status}). Próbáld újra.")
-            if text and status not in (0, 200):
-                print(text[:200])
-    finally:
-        session.close()
-
-def login_interactive() -> bool:
-    with sync_playwright() as playwright:
-        return login_with_playwright(playwright, unattended=False)
+def open_login_page() -> None:
+    print("Megnyitom a Lidl bejelentkezést a normál Firefoxban.")
+    print("Belépés után térj vissza az alkalmazásba, és indíts frissítést az r billentyűvel.")
+    open_in_normal_firefox(LOGIN_URL)
 
 
 def open_online(receipt_id: str) -> None:
-    with sync_playwright() as playwright:
-        session = BrowserSession.open(playwright, headless=False)
+    open_in_normal_firefox(DETAIL_URL.format(receipt_id=receipt_id))
+
+
+def print_firefox_info() -> None:
+    databases = discover_firefox_cookie_dbs()
+    if not databases:
+        print("Nem találok Firefox cookies.sqlite fájlt.")
+        return
+    print("Felismert Firefox-profilok:")
+    for database in databases:
         try:
-            session.page.goto(DETAIL_URL.format(receipt_id=receipt_id), wait_until="domcontentloaded")
-            input("A blokk megnyílt. Bezáráshoz térj vissza ide, és nyomj ENTER-t… ")
-        finally:
-            session.close()
+            rows = _read_lidl_cookie_rows(database)
+            print(f"- {database.parent} · Lidl cookie: {len(rows)}")
+        except Exception as error:
+            print(f"- {database.parent} · hiba: {error}")
 
 
-def ensure_authenticated_session(playwright: Playwright) -> BrowserSession:
-    session = BrowserSession.open(playwright, headless=True)
-    if session.authenticated():
-        return session
-    session.close()
-    print("A Lidl-munkamenet hiányzik vagy lejárt.")
-    if not login_with_playwright(playwright, unattended=True):
-        raise RuntimeError("Az automatikus belépés két próbálkozás után sem sikerült")
-    session = BrowserSession.open(playwright, headless=True)
-    if not session.authenticated():
-        session.close()
-        raise RuntimeError("A munkamenet a belépés után sem használható")
-    return session
+def session_status() -> bool:
+    try:
+        session = ensure_http_session()
+    except FirefoxSessionError as error:
+        print(error)
+        return False
+    print(f"Érvényes Lidl-munkamenet · profil: {session.firefox_profile}")
+    return True
 
 
 def chunks(values: list[Any], size: int) -> Iterable[list[Any]]:
@@ -1123,121 +908,94 @@ def chunks(values: list[Any], size: int) -> Iterable[list[Any]]:
 def sync_index(database: Database, full: bool = False) -> None:
     print("\nLidl indexfrissítés")
     print("=" * 60)
-    with sync_playwright() as playwright:
-        session = ensure_authenticated_session(playwright)
-        try:
-            status, first, text = session.fetch_json(API_LIST.format(page=1))
-            if status != 200 or not isinstance(first, dict):
-                raise RuntimeError(f"A blokklista nem tölthető le (HTTP {status}): {text[:200]}")
+    session = ensure_http_session()
 
-            page_size = int(first.get("size") or 10)
-            total_count = int(first.get("totalCount") or len(first.get("items") or []))
-            total_pages = max(1, (total_count + page_size - 1) // page_size)
-            full_required = full or database.get_meta("full_sync_complete", "0") != "1"
-            known = database.all_receipt_ids()
-            tickets: list[dict[str, Any]] = []
+    status, first, text = session.fetch_json(API_LIST.format(page=1))
+    if status != 200 or not isinstance(first, dict):
+        raise RuntimeError(f"A blokklista nem tölthető le (HTTP {status}): {text[:200]}")
 
-            if full_required:
-                print(f"Teljes blokklista: {total_count} blokk, {total_pages} oldal.")
-                tickets.extend(first.get("items") or [])
-                pages = list(range(2, total_pages + 1))
-                completed = 1
-                for page_batch in chunks(pages, 5):
-                    urls = [API_LIST.format(page=page) for page in page_batch]
-                    results = session.fetch_json_batch(urls)
-                    for page_no, result in zip(page_batch, results):
-                        if result.get("status") != 200 or not isinstance(result.get("data"), dict):
-                            raise RuntimeError(
-                                f"A(z) {page_no}. listaoldal hibás (HTTP {result.get('status')})"
-                            )
-                        tickets.extend(result["data"].get("items") or [])
-                        completed += 1
-                    print(f"Blokklista: {completed}/{total_pages} oldal", flush=True)
-                database.upsert_metadata(tickets)
-                database.set_meta("full_sync_complete", "1")
+    page_size = int(first.get("size") or 10)
+    total_count = int(first.get("totalCount") or len(first.get("items") or []))
+    total_pages = max(1, (total_count + page_size - 1) // page_size)
+    full_required = full or database.get_meta("full_sync_complete", "0") != "1"
+    known = database.all_receipt_ids()
+    tickets: list[dict[str, Any]] = []
+
+    if full_required:
+        print(f"Teljes blokklista: {total_count} blokk, {total_pages} oldal.")
+        tickets.extend(first.get("items") or [])
+        pages = list(range(2, total_pages + 1))
+        completed = 1
+        for page_batch in chunks(pages, 5):
+            urls = [API_LIST.format(page=page) for page in page_batch]
+            results = session.fetch_json_batch(urls)
+            for page_no, result in zip(page_batch, results):
+                if result.get("status") != 200 or not isinstance(result.get("data"), dict):
+                    raise RuntimeError(
+                        f"A(z) {page_no}. listaoldal hibás (HTTP {result.get('status')})"
+                    )
+                tickets.extend(result["data"].get("items") or [])
+                completed += 1
+            print(f"Blokklista: {completed}/{total_pages} oldal", flush=True)
+        database.upsert_metadata(tickets)
+        database.set_meta("full_sync_complete", "1")
+    else:
+        print("Inkrementális frissítés: csak az új blokkok keresése.")
+        page_no = 1
+        while page_no <= total_pages:
+            if page_no == 1:
+                page_data = first
             else:
-                print("Inkrementális frissítés: csak az új blokkok keresése.")
-                page_no = 1
-                while page_no <= total_pages:
-                    if page_no == 1:
-                        page_data = first
-                    else:
-                        status, page_data, text = session.fetch_json(API_LIST.format(page=page_no))
-                        if status != 200 or not isinstance(page_data, dict):
-                            raise RuntimeError(
-                                f"A(z) {page_no}. listaoldal hibás (HTTP {status}): {text[:120]}"
-                            )
-                    page_items = page_data.get("items") or []
-                    unknown = [ticket for ticket in page_items if str(ticket.get("id")) not in known]
-                    tickets.extend(unknown)
-                    print(
-                        f"Listaoldal {page_no}: {len(unknown)} új blokk",
-                        flush=True,
+                status, page_data, text = session.fetch_json(API_LIST.format(page=page_no))
+                if status != 200 or not isinstance(page_data, dict):
+                    raise RuntimeError(
+                        f"A(z) {page_no}. listaoldal hibás (HTTP {status}): {text[:120]}"
                     )
-                    if not unknown:
-                        break
-                    database.upsert_metadata(unknown)
-                    known.update(str(ticket.get("id")) for ticket in unknown)
-                    page_no += 1
+            page_items = page_data.get("items") or []
+            unknown = [ticket for ticket in page_items if str(ticket.get("id")) not in known]
+            tickets.extend(unknown)
+            print(f"Listaoldal {page_no}: {len(unknown)} új blokk", flush=True)
+            if not unknown:
+                break
+            database.upsert_metadata(unknown)
+            known.update(str(ticket.get("id")) for ticket in unknown)
+            page_no += 1
 
-            # A korábbi sikertelen blokkokat is újrapróbáljuk.
-            pending = [dict(row) for row in database.pending_rows()]
-            if not pending:
-                database.set_meta("last_refresh", dt.datetime.now().astimezone().isoformat(timespec="seconds"))
-                stats = database.stats()
-                print(f"Nincs feldolgozatlan új blokk. Index: {stats['receipts']} blokk, {stats['items']} tétel.")
-                return
+    pending = [dict(row) for row in database.pending_rows()]
+    if not pending:
+        database.set_meta("last_refresh", dt.datetime.now().astimezone().isoformat(timespec="seconds"))
+        stats = database.stats()
+        print(f"Nincs feldolgozatlan új blokk. Index: {stats['receipts']} blokk, {stats['items']} tétel.")
+        return
 
-            print(f"Feldolgozandó blokk: {len(pending)}")
-            processed = 0
-            failures = 0
-            item_total = 0
-            for pending_batch in chunks(pending, CONCURRENCY):
-                urls = [API_DETAIL.format(receipt_id=ticket["id"]) for ticket in pending_batch]
-                results = session.fetch_json_batch(urls)
-                for ticket, result in zip(pending_batch, results):
-                    processed += 1
-                    try:
-                        if result.get("status") != 200 or not isinstance(result.get("data"), dict):
-                            raise RuntimeError(f"HTTP {result.get('status')}: {str(result.get('text', ''))[:120]}")
-                        item_total += database.save_detail(ticket, result["data"])
-                    except Exception as error:
-                        failures += 1
-                        print(f"  HIBÁS blokk {ticket['id']}: {error}")
-                    print(
-                        f"Blokkok: {processed}/{len(pending)} · hibás: {failures}",
-                        end="\r",
-                        flush=True,
-                    )
-            print()
-            database.set_meta("last_refresh", dt.datetime.now().astimezone().isoformat(timespec="seconds"))
-            stats = database.stats()
+    print(f"Feldolgozandó blokk: {len(pending)}")
+    processed = 0
+    failures = 0
+    item_total = 0
+    for pending_batch in chunks(pending, CONCURRENCY):
+        urls = [API_DETAIL.format(receipt_id=ticket["id"]) for ticket in pending_batch]
+        results = session.fetch_json_batch(urls)
+        for ticket, result in zip(pending_batch, results):
+            processed += 1
+            try:
+                if result.get("status") != 200 or not isinstance(result.get("data"), dict):
+                    raise RuntimeError(f"HTTP {result.get('status')}: {str(result.get('text', ''))[:120]}")
+                item_total += database.save_detail(ticket, result["data"])
+            except Exception as error:
+                failures += 1
+                print(f"  HIBÁS blokk {ticket['id']}: {error}")
             print(
-                f"Kész. {stats['receipts']} blokk, {stats['items']} tétel. "
-                f"Most feldolgozott tétel: {item_total}. Függő blokk: {stats['pending']}."
+                f"Blokkok: {processed}/{len(pending)} · hibás: {failures}",
+                end="\r",
+                flush=True,
             )
-        finally:
-            session.close()
-
-
-def migrate_browser_engine() -> None:
-    """Egyszeri V2.3 migráció: új Firefox-profil és tiszta auth-várakozási állapot."""
-    marker = "firefox-playwright-v1"
-    try:
-        current = BROWSER_ENGINE_MARKER.read_text(encoding="utf-8").strip()
-    except OSError:
-        current = ""
-    if current != marker:
-        AUTH_STATE_FILE.unlink(missing_ok=True)
-        BROWSER_ENGINE_MARKER.write_text(marker, encoding="utf-8")
-        os.chmod(BROWSER_ENGINE_MARKER, 0o600)
-
-
-def reset_browser_profile() -> None:
-    if PROFILE_DIR.exists():
-        shutil.rmtree(PROFILE_DIR)
-    PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-    print("A Lidl Firefox-munkamenet törölve. A helyi blokkindex megmaradt.")
+    print()
+    database.set_meta("last_refresh", dt.datetime.now().astimezone().isoformat(timespec="seconds"))
+    stats = database.stats()
+    print(
+        f"Kész. {stats['receipts']} blokk, {stats['items']} tétel. "
+        f"Most feldolgozott tétel: {item_total}. Függő blokk: {stats['pending']}."
+    )
 
 
 def terminal_pause(message: str = "Folytatáshoz nyomj ENTER-t…") -> None:
@@ -1303,20 +1061,12 @@ class Tui:
             elif key == ord("l"):
                 self._receipt_list_view(screen)
             elif key == ord("L"):
-                self._external_action(screen, login_interactive)
-            elif key == ord("c"):
-                self._external_action(screen, save_credentials_interactive)
-            elif key == ord("C"):
-                if self._confirm(screen, "Töröljem a mentett Lidl-felhasználónevet és jelszót?"):
-                    self._external_action(screen, delete_credentials_interactive)
+                self._external_action(screen, open_login_page)
             elif key in (ord("o"), ord("O")) and self.results:
                 receipt_id = self.results[self.selected]["receipt_id"]
                 self._external_action(screen, lambda: open_online(receipt_id))
             elif key in (ord("s"), ord("S")):
                 self._stats_popup(screen)
-            elif key in (ord("x"), ord("X")):
-                if self._confirm(screen, "Töröljem a Lidl belépési munkamenetet? A blokkindex megmarad."):
-                    self._external_action(screen, reset_browser_profile)
             elif key in (ord("D"),):
                 if self._confirm(screen, "BIZTOSAN törlöd a teljes helyi blokkindexet?"):
                     self.db.clear_index()
@@ -1371,7 +1121,7 @@ class Tui:
             screen.addnstr(list_top + display_row, 1, line, width - 3, attr)
 
         screen.hline(height - 3, 0, curses.ACS_HLINE, width)
-        help_line = "/ keres · ↑↓ · ENTER blokk · r frissít · l blokkok · L belép · c fiók mentés · C fiók törlés · o online · s stat · x munkamenet · D index · q vége"
+        help_line = "/ keres · ↑↓ · ENTER blokk · r frissít · R teljes · l blokkok · L belépés · o online · s stat · D index · q vége"
         screen.addnstr(height - 2, 0, help_line, width - 1)
         screen.addnstr(height - 1, 0, " " + self.message, width - 1, curses.A_DIM)
         screen.refresh()
@@ -1538,46 +1288,34 @@ class Tui:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=APP_NAME)
-    parser.add_argument("--login", action="store_true", help="Lidl-belépés megnyitása")
-    parser.add_argument("--save-credentials", action="store_true", help="Lidl-fiók biztonságos mentése")
-    parser.add_argument("--delete-credentials", action="store_true", help="Mentett Lidl-fiók törlése")
-    parser.add_argument("--credential-status", action="store_true", help="Hitelesítőadat-tárolás állapota")
+    parser.add_argument("--login", action="store_true", help="Lidl-belépés megnyitása a normál böngészőben")
+    parser.add_argument("--session-status", action="store_true", help="Normál Firefox Lidl-munkamenetének ellenőrzése")
     parser.add_argument("--sync", action="store_true", help="Inkrementális frissítés")
     parser.add_argument("--full-sync", action="store_true", help="Teljes listaellenőrzés")
     parser.add_argument("--search", metavar="SZÖVEG", help="Nem interaktív keresés")
     parser.add_argument("--stats", action="store_true", help="Statisztika kiírása")
-    parser.add_argument("--logout", action="store_true", help="Lidl-munkamenet törlése")
     parser.add_argument("--clear-index", action="store_true", help="Helyi index törlése")
-    parser.add_argument("--browser-info", action="store_true", help="Használt böngészőmotor kiírása")
+    parser.add_argument("--browser-info", action="store_true", help="Felismert normál Firefox-profilok kiírása")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    migrate_browser_engine()
     database = Database()
     try:
         if args.browser_info:
-            print(f"Böngészőmotor: {BROWSER_ENGINE}; profil: {PROFILE_DIR}")
+            print_firefox_info()
             return 0
         if args.login:
-            return 0 if login_interactive() else 1
-        if args.save_credentials:
-            return 0 if save_credentials_interactive() else 1
-        if args.delete_credentials:
-            delete_credentials_interactive()
+            open_login_page()
             return 0
-        if args.credential_status:
-            print(CredentialStore.status())
-            return 0
+        if args.session_status:
+            return 0 if session_status() else 1
         if args.sync:
             sync_index(database, full=False)
             return 0
         if args.full_sync:
             sync_index(database, full=True)
-            return 0
-        if args.logout:
-            reset_browser_profile()
             return 0
         if args.clear_index:
             answer = input("BIZTOSAN törlöd a helyi blokkindexet? Írd be: TORLES\n> ")
@@ -1597,7 +1335,7 @@ def main() -> int:
                 )
             return 0
         if not sys.stdin.isatty() or not sys.stdout.isatty():
-            print("A TUI-hoz terminál szükséges. Használható: --sync, --search, --stats, --login, --save-credentials")
+            print("A TUI-hoz terminál szükséges. Használható: --sync, --full-sync, --search, --stats, --login, --session-status")
             return 2
         Tui(database).run()
         return 0

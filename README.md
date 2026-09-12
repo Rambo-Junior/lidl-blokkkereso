@@ -5,53 +5,47 @@
 
 Nem hivatalos, közösségi Linux TUI a saját Lidl digitális nyugták helyi indexeléséhez és kereséséhez.
 
-> **Nem hivatalos projekt.** Nem áll kapcsolatban a Lidl-lel, és a Lidl nem támogatja vagy hagyta jóvá. A Lidl weboldala, belépési folyamata és API-ja bármikor változhat, ezért a működés nem garantálható.
+> **Nem hivatalos projekt.** Nem áll kapcsolatban a Lidl-lel, és a Lidl nem támogatja vagy hagyta jóvá. A Lidl weboldala és a használt, nem hivatalos webes API bármikor változhat, ezért a működés nem garantálható.
+
+## Mi változott a 2.8.1-ben?
+
+A 2.8-as ág teljesen elhagyta a Playwrightot és a külön automatikus bejelentkezést. A program most a **normál Firefoxban már meglévő Lidl-munkamenetet** használja.
+
+- nincs Playwright;
+- nincs külön automatizált Firefox-profil;
+- nincs Lidl-jelszó tárolás;
+- nincs `keyring` / `cryptography` függőség;
+- nincs saját Python virtuális környezet;
+- a Firefox `cookies.sqlite` adatbázisa csak ideiglenes másolatból kerül olvasásra;
+- a Lidl-cookie-k értékei nem kerülnek az alkalmazás saját adatkönyvtárába.
 
 ## Funkciók
 
-- tartós Firefox-munkamenet Playwrighttal;
-- mentett Lidl-fiók és automatikus belépés;
 - inkrementális nyugtafrissítés;
+- teljes listaellenőrzés;
 - helyi SQLite-index;
 - terméknév, cikkszám, üzlet és dátum szerinti keresés;
 - letöltött blokkok listázása;
 - blokk megnyitása TUI-ban vagy online;
 - blokkösszeg és tételszám helyreállítása a mentett blokk HTML-jéből, ha az API metaadata hiányos;
-- egyetlen futtatható `lidl-blokkkereso.sh` fájl.
-
-## Böngésző
-
-A program **kizárólag Firefox böngészőmotorral működik**.
-
-Nem szükséges külön Firefoxot telepíteni: az első indításkor a Playwright automatikusan letölti a saját, kompatibilis Firefox buildjét.
-
-A program jelenlegi verziója **nem támogatja a Chromium, Google Chrome böngészőmotorokat**. Ennek oka, hogy a Lidl bejelentkezési oldala az automatizált Chromium-alapú munkameneteket egyes esetekben korlátozza.
-
-A letöltött Playwright Firefox külön, tartós profilt használ, ezért a meglévő saját Firefox-profilodat nem módosítja.
+- egyetlen futtatható `lidl-blokkkereso.sh` fájl;
+- normál Firefox-profil automatikus felismerése klasszikus, Snap és Flatpak telepítésnél.
 
 ## Követelmények
 
 - Linux
 - Python 3
-- `python3-venv`
-- internetkapcsolat az első telepítéshez és a nyugták frissítéséhez
-- Playwright Firefox – automatikusan települ az első indításkor
+- Mozilla Firefox
+- érvényes Lidl-bejelentkezés a normál Firefoxban
+- internetkapcsolat a blokkok frissítéséhez
 
 Ubuntu / Linux Mint / Debian:
 
 ```bash
-sudo apt install python3 python3-venv
+sudo apt install python3 firefox
 ```
 
-A program első indításkor saját virtuális környezetet készít, és telepíti a szükséges Python-csomagokat:
-
-```text
-playwright
-keyring
-cryptography
-```
-
-Ezután letölti a Playwright saját Firefox buildjét.
+A program a Python standard libraryn kívül nem igényel pip csomagot.
 
 ## Telepítés
 
@@ -66,49 +60,68 @@ Ezután:
 lidl-blokkkereso
 ```
 
+Verzió ellenőrzése:
+
+```bash
+lidl-blokkkereso --version
+```
+
 Eltávolítás:
 
 ```bash
 lidl-blokkkereso --uninstall
 ```
 
-A `--uninstall` az indítót távolítja el; a helyi adatbázist és böngészőprofilt nem törli.
+A `--uninstall` csak az indítót és a desktop bejegyzést távolítja el. A helyi blokkindexet nem törli.
 
 ## Első használat
 
-1. Indítsd el:
+1. Jelentkezz be a Lidl-fiókodba a normál Firefoxban.
+2. Ellenőrizd a munkamenetet:
+
+   ```bash
+   lidl-blokkkereso --session-status
+   ```
+
+3. Indíts inkrementális frissítést:
+
+   ```bash
+   lidl-blokkkereso --sync
+   ```
+
+4. Indítsd a TUI-t:
 
    ```bash
    lidl-blokkkereso
    ```
 
-2. A TUI-ban `c` billentyűvel mentsd a Lidl-fiókot.
-3. `r` vagy `F5` indítja az inkrementális frissítést.
-4. Ha nincs érvényes munkamenet, a program megpróbál automatikusan bejelentkezni.
-5. Az első teljes indexelés után a későbbi frissítések csak az új nyugtákat töltik le.
+Ha a munkamenet lejárt, nyisd meg a belépést:
+
+```bash
+lidl-blokkkereso --login
+```
+
+Jelentkezz be a megnyíló normál Firefoxban, majd futtasd újra a frissítést.
 
 ## TUI billentyűk
 
 A fő nézetben:
 
 - `/` – keresés
-- `↑` / `↓` – navigálás
+- `↑` / `↓` vagy `j` / `k` – navigálás
 - `ENTER` – blokk megnyitása
 - `r` / `F5` – inkrementális frissítés
 - `R` – teljes listaellenőrzés
 - `l` – letöltött blokkok listája
-- `L` – Lidl belépés
-- `c` – fiók mentése vagy módosítása
-- `C` – mentett fiók törlése
-- `o` – blokk online megnyitása
+- `L` – Lidl belépési oldal megnyitása a normál Firefoxban
+- `o` – kijelölt blokk online megnyitása
 - `s` – statisztika
-- `x` – Lidl munkamenet törlése
-- `D` – teljes helyi index törlése
+- `D` – teljes helyi index törlése, megerősítéssel
 - `q` – vissza / kilépés
 
 A blokklistában és a megnyitott blokk nézetében:
 
-- `↑` / `↓` – navigálás / görgetés
+- `↑` / `↓` vagy `j` / `k` – navigálás / görgetés
 - `PgUp` / `PgDn` – lapozás
 - `ENTER` – blokk megnyitása a listából
 - `o` – online megnyitás
@@ -119,18 +132,54 @@ A blokklistában és a megnyitott blokk nézetében:
 ```bash
 lidl-blokkkereso --version
 lidl-blokkkereso --about
+lidl-blokkkereso --login
+lidl-blokkkereso --session-status
 lidl-blokkkereso --browser-info
-lidl-blokkkereso --credential-status
-lidl-blokkkereso --save-credentials
-lidl-blokkkereso --delete-credentials
 lidl-blokkkereso --sync
 lidl-blokkkereso --full-sync
 lidl-blokkkereso --search "camembert"
 lidl-blokkkereso --stats
-lidl-blokkkereso --login
-lidl-blokkkereso --logout
 lidl-blokkkereso --clear-index
 ```
+
+### Inkrementális és teljes frissítés
+
+Normál használathoz:
+
+```bash
+lidl-blokkkereso --sync
+```
+
+Ez a legújabb listaoldalaktól indul, és megáll, amikor már nem talál új blokkot.
+
+Teljes listaellenőrzéshez:
+
+```bash
+lidl-blokkkereso --full-sync
+```
+
+A meglévő helyi index megmarad; a program végigellenőrzi a teljes blokklistát.
+
+## Firefox-profil felismerés
+
+A program ezeket a Linuxon gyakori helyeket vizsgálja:
+
+```text
+~/.mozilla/firefox/
+~/snap/firefox/common/.mozilla/firefox/
+~/.var/app/org.mozilla.firefox/.mozilla/firefox/
+```
+
+Ha több Firefox-profilod van, konkrét profilt is megadhatsz:
+
+```bash
+LIDL_FIREFOX_PROFILE="$HOME/.mozilla/firefox/xxxxxxxx.default-release" \
+  lidl-blokkkereso --session-status
+```
+
+A változó közvetlenül `cookies.sqlite` fájlra is mutathat.
+
+> Jelenleg a program az üres Firefox `originAttributes` értékhez tartozó Lidl-cookie-kat használja. Ha a Lidl-bejelentkezést Firefox Multi-Account Containerben vagy más elkülönített konténerben használod, a munkamenet nem feltétlenül lesz felismerhető.
 
 ## Adatok helye
 
@@ -140,50 +189,65 @@ Alapértelmezetten:
 ~/.local/share/lidl-blokkkereso/
 ```
 
-Itt található többek között:
+A fontos tartós adat:
 
-- SQLite nyugtaindex;
-- tartós Firefox-profil;
-- virtuális Python-környezet;
-- böngészőmotor-jelölő;
-- szükség esetén a fallback hitelesítőadat-fájl.
+```text
+lidl_receipts.sqlite3
+```
 
-A program futás közben ezen kívül cache fájlokat is létrehozhat:
+A beágyazott Python program futáskor ideiglenesen/kódként kicsomagolásra kerülhet:
 
 ```text
 ~/.cache/lidl-blokkkereso/
 ```
 
-## Hitelesítőadatok
+A program **nem másolja tartósan** a Firefox cookie-adatbázisát a saját adatkönyvtárába.
 
-A program először a Linux rendszerkulcstartóját próbálja használni.
+## Frissítés 2.7.x-ről
 
-Ha ez nem elérhető, helyi titkosított fallback fájlt használ.
+A 2.8.1 ugyanazt a helyi SQLite blokkindexet használja, ezért a korábbi index megtartható.
 
-A hitelesítőadatok **nem kerülnek bele a `lidl-blokkkereso.sh` fájlba**.
+A 2.7.x által használt alábbi elemeket a 2.8.1 már nem használja:
 
-Fontos: ha ugyanaz a Linux-felhasználói fiók teljesen kompromittálódik, semmilyen lokálisan tárolt hitelesítőadat nem tekinthető teljesen biztonságosnak. A program saját működéséhez vissza tudja fejteni a fallback credential fájlt.
+- Playwright Firefox-profil;
+- Python `venv`;
+- `credentials.enc`;
+- `auth-state.json`;
+- korábban elmentett Lidl hitelesítőadatok.
+
+Ezek megléte nem akadályozza a 2.8.1 működését. Törlésük csak külön, tudatos takarításként javasolt, miután az új verzió működését ellenőrizted.
 
 ## Adatvédelem
 
 A program:
 
-- a nyugtákat helyben indexeli;
+- a blokkokat helyben indexeli;
 - nem használ saját köztes szervert;
 - nem küld telemetriát;
-- nem gyűjt statisztikát a használatról.
+- nem gyűjt használati statisztikát;
+- nem kéri és nem tárolja a Lidl-jelszavadat;
+- a Firefox Lidl-cookie-jait csak a szükséges API-kérésekhez használja.
 
-A hálózati kommunikáció a Lidl webes felületeihez, illetve az első telepítéskor a Python/Playwright függőségek letöltési forrásaihoz történik.
+Részletek: [`PRIVACY.md`](PRIVACY.md).
 
-Ne tölts fel GitHubra semmilyen saját adatkönyvtárat, Firefox-profilt, SQLite-adatbázist vagy credential fájlt.
+## Biztonság
+
+A Firefox munkamenet-cookie hitelesítő adatnak számít. Ne tölts fel GitHubra vagy hibajegyhez:
+
+- Firefox-profilt;
+- `cookies.sqlite` / `cookies.sqlite-wal` / `cookies.sqlite-shm` fájlt;
+- Cookie fejlécet vagy `Copy as cURL` kimenetet;
+- helyi SQLite blokkindexet, ha személyes vásárlási adatot tartalmaz.
+
+Részletek: [`SECURITY.md`](SECURITY.md).
 
 ## Korlátozások
 
 - jelenleg csak a Lidl Magyarország támogatott;
-- kizárólag Firefox böngészőmotor támogatott;
-- a Lidl belépési folyamata és API-ja nem hivatalos integrációs felület;
-- a Lidl bármikor módosíthatja a végpontokat vagy a hitelesítési folyamatot;
-- időszakos belépési korlátozások vagy CAPTCHA előfordulhatnak.
+- a Firefoxban meglévő érvényes Lidl-munkamenet szükséges;
+- a Lidl nyugta API-ja nem hivatalos publikus integrációs felület;
+- a Lidl bármikor módosíthatja a végpontokat vagy a hitelesítési viselkedést;
+- több Firefox-profil esetén szükség lehet a `LIDL_FIREFOX_PROFILE` beállítására.
 
 ## Jogi megjegyzés
 
@@ -206,53 +270,47 @@ MIT. Lásd: [`LICENSE`](LICENSE).
 
 Unofficial community Linux TUI for locally indexing and searching your own Lidl digital receipts.
 
-> **Unofficial project.** This project is not affiliated with Lidl, and Lidl does not endorse or support it. Lidl may change its website, login flow or API at any time, so functionality cannot be guaranteed.
+> **Unofficial project.** This project is not affiliated with Lidl, and Lidl does not endorse or support it. Lidl may change its website or the unofficial web API used by this tool at any time, so functionality cannot be guaranteed.
+
+## What changed in 2.8.1?
+
+The 2.8 branch completely removes Playwright and the separate automated login flow. The application now uses the **existing Lidl session from your normal Firefox profile**.
+
+- no Playwright;
+- no separate automated Firefox profile;
+- no Lidl password storage;
+- no `keyring` / `cryptography` dependency;
+- no application-specific Python virtual environment;
+- Firefox `cookies.sqlite` is read only through a temporary copy;
+- Lidl cookie values are not persisted in the application's own data directory.
 
 ## Features
 
-- persistent Firefox session via Playwright;
-- saved Lidl account credentials and automatic login;
 - incremental receipt refresh;
+- full receipt-list verification;
 - local SQLite index;
 - search by product name, article number, store and date;
-- browse already downloaded receipts;
+- browse downloaded receipts;
 - open receipts inside the TUI or online;
-- recover receipt totals and item counts from the stored receipt HTML when API metadata is missing;
-- distributed as a single executable `lidl-blokkkereso.sh` file.
-
-## Browser
-
-The application **works exclusively with the Firefox browser engine**.
-
-You do not need to install Firefox separately. On first launch, Playwright automatically downloads its own compatible Firefox build.
-
-The current version **does not support Chromium, Google Chrome or Microsoft Edge browser engines**. The reason is that Lidl's login service may restrict automated Chromium-based sessions in some environments.
-
-The Playwright Firefox build uses its own persistent profile and does not modify your personal Firefox profile.
+- recover receipt totals and item counts from stored receipt HTML when API metadata is incomplete;
+- distributed as a single executable `lidl-blokkkereso.sh` file;
+- automatic discovery of regular, Snap and Flatpak Firefox profiles on Linux.
 
 ## Requirements
 
 - Linux
 - Python 3
-- `python3-venv`
-- internet connection for first-time setup and receipt refresh
-- Playwright Firefox – installed automatically on first launch
+- Mozilla Firefox
+- an active Lidl login in your normal Firefox profile
+- internet connection for receipt refresh
 
 Ubuntu / Linux Mint / Debian:
 
 ```bash
-sudo apt install python3 python3-venv
+sudo apt install python3 firefox
 ```
 
-On first launch, the script creates its own Python virtual environment and installs:
-
-```text
-playwright
-keyring
-cryptography
-```
-
-It then downloads Playwright's Firefox build.
+No pip packages are required; the application uses the Python standard library only.
 
 ## Installation
 
@@ -261,10 +319,16 @@ chmod +x lidl-blokkkereso.sh
 ./lidl-blokkkereso.sh --install
 ```
 
-Then run:
+Then:
 
 ```bash
 lidl-blokkkereso
+```
+
+Check version:
+
+```bash
+lidl-blokkkereso --version
 ```
 
 Uninstall launcher:
@@ -273,43 +337,56 @@ Uninstall launcher:
 lidl-blokkkereso --uninstall
 ```
 
-`--uninstall` removes the launcher only. It does not delete your local receipt database or browser profile.
+`--uninstall` removes only the launcher and desktop entry. It does not delete the local receipt index.
 
 ## First use
 
-1. Start the application:
+1. Log in to Lidl in your normal Firefox browser.
+2. Verify the session:
+
+   ```bash
+   lidl-blokkkereso --session-status
+   ```
+
+3. Run an incremental refresh:
+
+   ```bash
+   lidl-blokkkereso --sync
+   ```
+
+4. Start the TUI:
 
    ```bash
    lidl-blokkkereso
    ```
 
-2. Press `c` in the TUI to save your Lidl account credentials.
-3. Press `r` or `F5` to start an incremental refresh.
-4. If there is no valid Lidl session, the application attempts to log in automatically.
-5. After the initial full index has been created, later refreshes download only new receipts.
+If the session expires, open the login page:
+
+```bash
+lidl-blokkkereso --login
+```
+
+Log in in the normal Firefox window, then run the refresh again.
 
 ## TUI keys
 
 Main view:
 
 - `/` – search
-- `↑` / `↓` – navigate
+- `↑` / `↓` or `j` / `k` – navigate
 - `ENTER` – open receipt
 - `r` / `F5` – incremental refresh
-- `R` – full receipt-list check
+- `R` – full receipt-list verification
 - `l` – list downloaded receipts
-- `L` – Lidl login
-- `c` – save or update account credentials
-- `C` – delete saved credentials
-- `o` – open receipt online
+- `L` – open Lidl login in the normal Firefox browser
+- `o` – open selected receipt online
 - `s` – statistics
-- `x` – delete Lidl browser session
-- `D` – delete local receipt index
+- `D` – delete the local index after confirmation
 - `q` – back / quit
 
 Receipt list and receipt viewer:
 
-- `↑` / `↓` – navigate / scroll
+- `↑` / `↓` or `j` / `k` – navigate / scroll
 - `PgUp` / `PgDn` – page
 - `ENTER` – open selected receipt
 - `o` – open online
@@ -320,18 +397,36 @@ Receipt list and receipt viewer:
 ```bash
 lidl-blokkkereso --version
 lidl-blokkkereso --about
+lidl-blokkkereso --login
+lidl-blokkkereso --session-status
 lidl-blokkkereso --browser-info
-lidl-blokkkereso --credential-status
-lidl-blokkkereso --save-credentials
-lidl-blokkkereso --delete-credentials
 lidl-blokkkereso --sync
 lidl-blokkkereso --full-sync
 lidl-blokkkereso --search "camembert"
 lidl-blokkkereso --stats
-lidl-blokkkereso --login
-lidl-blokkkereso --logout
 lidl-blokkkereso --clear-index
 ```
+
+## Firefox profile discovery
+
+The application checks these common Linux locations:
+
+```text
+~/.mozilla/firefox/
+~/snap/firefox/common/.mozilla/firefox/
+~/.var/app/org.mozilla.firefox/.mozilla/firefox/
+```
+
+You can force a specific profile:
+
+```bash
+LIDL_FIREFOX_PROFILE="$HOME/.mozilla/firefox/xxxxxxxx.default-release" \
+  lidl-blokkkereso --session-status
+```
+
+The variable may also point directly to `cookies.sqlite`.
+
+> The current implementation uses Lidl cookies with empty Firefox `originAttributes`. A Lidl login isolated in Firefox Multi-Account Containers or another container may not be detected.
 
 ## Data location
 
@@ -341,50 +436,65 @@ By default:
 ~/.local/share/lidl-blokkkereso/
 ```
 
-This may contain:
+The important persistent file is:
 
-- SQLite receipt index;
-- persistent Firefox profile;
-- Python virtual environment;
-- browser-engine marker;
-- encrypted fallback credentials file when needed.
+```text
+lidl_receipts.sqlite3
+```
 
-The application may also create cache files under:
+The embedded Python application may be extracted at runtime under:
 
 ```text
 ~/.cache/lidl-blokkkereso/
 ```
 
-## Credentials
+The application does **not** persist a copy of your Firefox cookie database in its own data directory.
 
-The application first tries to store credentials in the Linux system keyring.
+## Upgrading from 2.7.x
 
-If no usable keyring is available, it uses an encrypted local fallback file.
+2.8.1 reuses the same local SQLite receipt index, so your existing index can remain in place.
 
-Credentials are **never embedded in `lidl-blokkkereso.sh`**.
+The following 2.7.x components are no longer used:
 
-Important: if your Linux user account itself is fully compromised, no locally stored credential should be considered completely secure. The application must be able to decrypt its fallback credential file in order to use it.
+- Playwright Firefox profile;
+- Python `venv`;
+- `credentials.enc`;
+- `auth-state.json`;
+- previously saved Lidl credentials.
+
+Their presence does not prevent 2.8.1 from working. Remove them only as a deliberate cleanup after verifying the new version.
 
 ## Privacy
 
 The application:
 
 - indexes receipts locally;
-- does not use its own relay server;
-- does not send telemetry;
-- does not collect usage analytics.
+- does not use a relay server;
+- sends no telemetry;
+- collects no usage analytics;
+- does not request or store your Lidl password;
+- uses Firefox Lidl cookies only for the required API requests.
 
-Network communication is made to Lidl's web services and, during initial setup, to the package/download sources required for Python and Playwright dependencies.
+See [`PRIVACY.md`](PRIVACY.md).
 
-Do not upload your local application data directory, Firefox profile, SQLite database or credential files to GitHub.
+## Security
+
+Firefox session cookies are authentication material. Never upload these to GitHub or bug reports:
+
+- Firefox profiles;
+- `cookies.sqlite`, `cookies.sqlite-wal`, `cookies.sqlite-shm`;
+- Cookie headers or `Copy as cURL` output;
+- your local SQLite receipt index if it contains personal purchase data.
+
+See [`SECURITY.md`](SECURITY.md).
 
 ## Limitations
 
-- currently supports Lidl Hungary only;
-- Firefox browser engine only;
-- Lidl's login flow and receipt API are not official public integration interfaces;
+- Lidl Hungary only;
+- an active Lidl session in Firefox is required;
+- the Lidl receipt API is not an official public integration API;
 - Lidl may change endpoints or authentication behavior at any time;
-- temporary login throttling or CAPTCHA may occur.
+- multiple Firefox profiles may require `LIDL_FIREFOX_PROFILE`.
 
 ## Legal notice
 
