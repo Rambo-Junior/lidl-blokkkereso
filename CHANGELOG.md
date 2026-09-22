@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.0
+
+- Új Firefox WebExtension + Native Messaging architektúra.
+- A Lidl API-hívásokat a felhasználó normál, bejelentkezett Firefox-munkamenete végzi.
+- Mozilla által aláírt, tartósan telepíthető Firefox-kiegészítő.
+- Playwright eltávolítva.
+- Firefox `cookies.sqlite` másolás és közvetlen cookie-auth eltávolítva.
+- Lidl-jelszó tárolása nem szükséges.
+- Inkrementális (`r` / `--sync`) és teljes (`R` / `--full-sync`) szinkron.
+- A meglévő SQLite nyugtaindex és TUI megmarad.
+- A böngésző és a Linux alkalmazás Native Messaginggel kommunikál; nincs localhost webszerver.
+
 ## 2.8.1
 
 - A hitelesítés teljesen átállt a felhasználó normál Firefoxában meglévő Lidl-munkamenetre.

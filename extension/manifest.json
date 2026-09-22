@@ -1,0 +1,32 @@
+{
+  "manifest_version": 2,
+  "name": "Lidl blokkkereső v3",
+  "version": "3.0.0",
+  "description": "A normál Firefox Lidl-munkamenetével szinkronizálja a digitális nyugtákat Native Messagingen keresztül.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "lidl-blokkkereso-v3@rambo-junior",
+      "strict_min_version": "109.0"
+    }
+  },
+  "permissions": [
+    "nativeMessaging",
+    "https://www.lidl.hu/*"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.lidl.hu/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

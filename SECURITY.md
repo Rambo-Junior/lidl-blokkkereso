@@ -1,35 +1,21 @@
 # Security
 
-## Érzékeny helyi adatok
+## Ne tölts fel nyilvánosan
 
-Soha ne töltsd fel hibajegyhez, fórumra vagy GitHubra az alábbiakat:
+- `~/.local/share/lidl-blokkkereso/lidl_receipts.sqlite3`
+- nyers digitális nyugtákat
+- Firefox cookie-kat vagy teljes Firefox-profilt
+- Lidl-felhasználónevet vagy jelszót
+- személyes vásárlási adatot tartalmazó debug naplót
 
-- teljes Firefox-profilt;
-- `cookies.sqlite`, `cookies.sqlite-wal`, `cookies.sqlite-shm` fájlokat;
-- Lidl-cookie értékeket vagy teljes `Cookie:` fejlécet;
-- böngészőből kimásolt `Copy as cURL` parancsot, ha hitelesítő cookie-kat vagy tokeneket tartalmaz;
-- `~/.local/share/lidl-blokkkereso/lidl_receipts.sqlite3` fájlt, ha személyes vásárlási adatot tartalmaz;
-- Lidl-felhasználónevet vagy jelszót.
+## Hitelesítés
 
-## Firefox session-hozzáférés
+A v3 nem tárol Lidl-jelszót és nem másolja a Firefox `cookies.sqlite` adatbázisát. A Lidl API-kéréseket a Mozilla által aláírt Firefox WebExtension indítja a felhasználó saját, bejelentkezett Firefox-munkamenetéből.
 
-A 2.8.1 a normál Firefoxban meglévő Lidl-munkamenetet használja. Ehhez a programnak olvasási hozzáférése van a saját Linux-felhasználód Firefox cookie-adatbázisához.
+## Native Messaging
 
-A Lidl session cookie hitelesítő adatnak számít: aki hozzáfér, a munkamenet érvényességi ideje alatt a fiókhoz kapcsolódó webes API-kat is elérheti. Emiatt csak megbízható forrásból származó programot futtass ugyanazon Linux-felhasználó alatt.
+Native host: `hu.lidl.blokkkereso`
 
-A program a cookie-adatbázist ideiglenes könyvtárba másolja, és nem tartja meg a másolatot tartós alkalmazásadatként.
+Engedélyezett extension ID: `lidl-blokkkereso-v3@rambo-junior`
 
-## Korábbi 2.7.x adatok
-
-A 2.8.1 már nem használja a korábbi:
-
-- `browser-profile-firefox/` könyvtárat;
-- `credentials.enc` fájlt;
-- `auth-state.json` fájlt;
-- alkalmazás saját `venv/` könyvtárát.
-
-Frissítés után ezek a fájlok helyben megmaradhatnak. Csak akkor töröld őket, ha már ellenőrizted, hogy a 2.8.1 megfelelően működik, és nincs szükséged visszaállásra.
-
-## Hibajelentés
-
-Biztonsági hibánál csak a reprodukcióhoz szükséges minimális naplót oszd meg. Session cookie-t, tokent, nyugtatartalmat és személyes adatot mindig távolíts el.
+A kommunikáció Firefox Native Messaginggel történik; a program nem nyit localhost TCP-portot.

@@ -1,13 +1,10 @@
 # Privacy
 
-A program nem tartalmaz telemetriát, nem gyűjt használati statisztikát és nem üzemeltet saját köztes szervert.
+A Lidl blokk- és termékkereső nem tartalmaz telemetriát, reklámot vagy fejlesztő által üzemeltetett köztes szervert.
 
-## Helyileg tárolt adatok
+## Helyben tárolt adatok
 
-A program tartósan tárolhatja:
-
-- a felhasználó saját digitális Lidl-nyugtáit és azok keresési indexét a helyi SQLite adatbázisban;
-- technikai cache fájlként a beágyazott Python alkalmazás kibontott példányát.
+A Linux alkalmazás helyben tárolhatja a felhasználó saját digitális Lidl-nyugtáit, a nyugták SQLite keresőindexét és a szinkron állapotához szükséges helyi metaadatokat.
 
 Alapértelmezett adatkönyvtár:
 
@@ -15,22 +12,12 @@ Alapértelmezett adatkönyvtár:
 ~/.local/share/lidl-blokkkereso/
 ```
 
-## Firefox munkamenet
+## Firefox-kiegészítő
 
-A 2.8.1 nem kér és nem tárol Lidl-felhasználónevet vagy jelszót.
+A v3 Firefox WebExtension a `www.lidl.hu` oldalon a felhasználó meglévő, bejelentkezett Lidl-munkamenetét használja a saját digitális nyugták lekéréséhez.
 
-A program a felhasználó normál Firefox-profiljának `cookies.sqlite` adatbázisából használja a már meglévő Lidl-munkamenetet. A futó Firefox miatt az adatbázist és a hozzá tartozó `-wal` / `-shm` fájlokat egy rendszer által kezelt ideiglenes könyvtárba másolja, majd a másolatból olvas.
+A kiegészítő nem tárol Lidl-felhasználónevet vagy jelszót, nem másolja a Firefox cookie-adatbázisát, és nem küld nyugtaadatot a fejlesztőnek vagy harmadik fél szerverére.
 
-- a Lidl-cookie-k értékei nem kerülnek az alkalmazás saját tartós adatkönyvtárába;
-- a cookie-értékeket a program nem írja ki normál naplóba;
-- az ideiglenes másolat a művelet végén törlődik a `TemporaryDirectory` működésének megfelelően.
+A nyugtaadatok Firefox Native Messagingen keresztül kizárólag a felhasználó saját gépén futó `hu.lidl.blokkkereso` native hosthoz kerülnek.
 
-## Hálózati kommunikáció
-
-A program a saját nyugták lekéréséhez közvetlenül a Lidl Magyarország webes szolgáltatásaihoz kapcsolódik (`www.lidl.hu`).
-
-A program nem továbbítja a nyugtákat vagy a Lidl-munkamenetet saját vagy harmadik fél által üzemeltetett köztes szerverre.
-
-## Korábbi verziók
-
-A 2.7.x verziók használhattak külön Playwright-profilt és mentett hitelesítőadatot. A 2.8.1 ezeket már nem használja. Régi fájlok frissítés után a helyi adatkönyvtárban maradhatnak, amíg a felhasználó külön el nem távolítja őket.
+A Mozilla engedélymodellje miatt a kiegészítő deklarálja a `financialAndPaymentInfo` és `websiteContent` adatkategóriákat, mivel vásárlási/nyugtaadatokat ad át a helyi Linux alkalmazásnak.
