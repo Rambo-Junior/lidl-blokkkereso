@@ -7,7 +7,7 @@ set -Eeuo pipefail
 
 APP_ID="lidl-blokkkereso"
 APP_NAME="Lidl blokk- és termékkereső"
-APP_VERSION="3.0.0"
+APP_VERSION="3.0.1"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/${APP_ID}"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/${APP_ID}"
 PY_APP="$CACHE_DIR/lidl_app.py"
@@ -144,7 +144,7 @@ from typing import Any, Iterable
 
 
 APP_NAME = "Lidl blokk- és termékkereső"
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.0.1"
 BASE_URL = "https://www.lidl.hu"
 LOGIN_URL = (
     BASE_URL
@@ -689,13 +689,29 @@ def _cleanup_old_v3_runs(max_age_days: int = 7) -> None:
 
 
 def _wait_for_v3_run(run_id: str, timeout: int) -> dict[str, Any]:
-    deadline = time.monotonic() + timeout
+    """Várakozás a bridge-re; a néma indulási és elakadt futási hibákat külön jelzi."""
+    started = time.monotonic()
+    deadline = started + timeout
+    # Ha a kiegészítő egyáltalán nem válaszol, ne várjunk 10 percet.
+    startup_timeout = min(30, timeout)
+    stall_timeout = min(90, timeout)
+    last_progress = started
+    last_signature: tuple[Any, ...] | None = None
     last_line = ""
+    last_wait_notice = 0
     while time.monotonic() < deadline:
+        now = time.monotonic()
         status = _read_run_status(run_id)
         if status:
             state = str(status.get("state") or "")
             phase = str(status.get("phase") or "")
+            signature = (
+                state, phase, status.get("listPage"), status.get("detailDone"),
+                status.get("updatedAt"), status.get("message"),
+            )
+            if signature != last_signature:
+                last_signature = signature
+                last_progress = now
             if phase == "list":
                 line = (
                     f"Firefox: blokklista {status.get('listPage', 0)}/{status.get('totalPages', '?')}"
@@ -717,12 +733,33 @@ def _wait_for_v3_run(run_id: str, timeout: int) -> dict[str, Any]:
                 return status
             if state == "error":
                 raise BrowserBridgeError(str(status.get("message") or "A Firefox bridge hibát jelzett."))
+            if now - last_progress >= stall_timeout:
+                raise BrowserBridgeError(
+                    f"{int(stall_timeout)} másodperce nincs előrehaladás a Firefoxban "
+                    f"(fázis: {phase or 'ismeretlen'}). A futás naplója: "
+                    f"{_run_dir(run_id) / 'status.json'}"
+                )
+        elif now - started >= startup_timeout:
+            raise BrowserBridgeError(
+                f"{int(startup_timeout)} másodpercen belül semmilyen válasz nem érkezett "
+                "a Firefox kiegészítőtől.\n"
+                "Ellenőrizd az about:addons oldalon, hogy a Lidl blokkkereső v3 aktív-e; "
+                "a megnyílt Lidl-lap címsorában megmaradt-e az lbk_v3_run= paraméter; "
+                "és megjelent-e a jobb alsó sarokban a kiegészítő állapotjelzője.\n"
+                "Részletes hibák: about:debugging#/runtime/this-firefox → Lidl blokkkereső → Inspect. "
+                f"Futás: {_run_dir(run_id)}"
+            )
+        # Csak tájékoztat: a felhasználó lássa, hogy nem fagyott le a TUI.
+        elapsed = int(now - started)
+        if elapsed >= 5 and elapsed // 15 > last_wait_notice and not status:
+            last_wait_notice = elapsed // 15
+            print(f"Firefox válaszára várakozás: {elapsed}/{int(startup_timeout)} mp…", flush=True)
         time.sleep(0.25)
 
     raise BrowserBridgeError(
-        f"{timeout} másodpercen belül nem érkezett kész válasz a Firefox kiegészítőtől.\n"
-        "Ellenőrizd az about:debugging oldalon, hogy a Lidl blokkkereső v3 extension be van töltve, "
-        "majd kattints a Reload gombra."
+        f"Időtúllépés ({timeout} mp). Utolsó állapot: "
+        f"{_run_dir(run_id) / 'status.json'}. "
+        "A Firefox tovább dolgozhat; új szinkron előtt ellenőrizd az állapotát."
     )
 
 
@@ -988,17 +1025,36 @@ class Tui:
         self.message = f"{len(self.results)} találat."
 
     def _external_action(self, screen: Any, action: Any) -> None:
-        curses.def_prog_mode()
-        curses.endwin()
+        # Ctrl+C esetén is mindig állítsuk helyre a curses terminált.
+        # A háttérben megnyitott Firefox-lap ettől még futhat; az index biztonságban marad.
+        suspended = False
+        interrupted = False
         try:
-            action()
-        except Exception as error:
-            print(f"\nHIBA: {error}", file=sys.stderr)
-        print("\n3 másodperc múlva visszatérek a TUI-hoz…")
-        time.sleep(3)
-        curses.reset_prog_mode()
-        curses.curs_set(0)
-        screen.clear()
+            curses.def_prog_mode()
+            curses.endwin()
+            suspended = True
+            try:
+                action()
+            except KeyboardInterrupt:
+                interrupted = True
+                print("\nMűvelet megszakítva (Ctrl+C). A Firefox-lap még dolgozhat; "
+                      "új szinkron előtt várd meg, amíg befejezi.", flush=True)
+            except Exception as error:
+                print(f"\nHIBA: {error}", file=sys.stderr, flush=True)
+            if not interrupted:
+                print("\n3 másodperc múlva visszatérek a TUI-hoz…", flush=True)
+                time.sleep(3)
+        finally:
+            if suspended:
+                try:
+                    curses.reset_prog_mode()
+                    curses.curs_set(0)
+                    screen.clear()
+                except curses.error:
+                    # Ha a terminál közben bezárult, a kilépést ne nyomja el
+                    # egy másodlagos curses-hiba.
+                    pass
+
 
     def _confirm(self, screen: Any, question: str) -> bool:
         height, width = screen.getmaxyx()
@@ -1183,7 +1239,10 @@ def main() -> int:
         if not sys.stdin.isatty() or not sys.stdout.isatty():
             print("A TUI-hoz terminál szükséges. Használható: --sync, --full-sync, --search, --stats, --login, --session-status, --browser-info")
             return 2
-        Tui(database).run()
+        try:
+            Tui(database).run()
+        except KeyboardInterrupt:
+            print("\nKilépés (Ctrl+C).")
         return 0
     finally:
         database.close()

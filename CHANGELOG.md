@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.0.1
+
+- `Ctrl+C`-kezelés és curses terminál helyreállítás a TUI-frissítéseknél.
+- Ha nem érkezik első válasz, 30 mp után érthető hiba; 90 mp-es előrehaladás-ellenőrzés.
+- Az aláírt XPI-t a telepítő tartósan elmenti még a telepítőcsomag ideiglenes mappájának törlése előtt.
+- Az aktív, meglévő böngésző-kiegészítőt a telepítő nem kéri újra telepíteni.
+- A Firefox-kiegészítő változatlanul Mozilla által aláírt v3.0.0; a Linux CLI v3.0.1.
+
 ## 3.0.0
 
 - Új Firefox WebExtension + Native Messaging architektúra.

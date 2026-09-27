@@ -69,7 +69,6 @@
         action: "sync_error",
         runId,
         message: String(message),
-        pageUrl: window.location.href,
         at: new Date().toISOString()
       });
     } catch (_) {}
