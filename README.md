@@ -4,7 +4,7 @@
 
 Nem hivatalos, közösségi Linux TUI a saját Lidl digitális nyugták helyi indexeléséhez és kereséséhez. A projekt nem áll kapcsolatban a Lidl-lel.
 
-## v3.0.1 architektúra
+## v3.0.2 architektúra
 
 ```text
 normál Firefox
@@ -22,6 +22,8 @@ SQLite index + TUI
 
 Nincs Playwright, nincs Lidl-jelszó tárolás, nincs Firefox-cookie másolás, nincs localhost webszerver, nincs telemetria.
 
+A Linux CLI verziója **3.0.2**. A Firefox-kiegészítő továbbra is a Mozilla által aláírt **3.0.0** verzió, mert a 3.0.1 és 3.0.2 javításai kizárólag a Linux oldali alkalmazást érintik.
+
 ## Követelmények
 
 - Linux
@@ -36,15 +38,17 @@ Debian / Ubuntu / Linux Mint:
 sudo apt install python3 curl unzip
 ```
 
-## Telepítés GitHub Release-ből
+## Telepítés vagy frissítés GitHub Release-ből
+
+Ajánlott, SHA-256 ellenőrzéssel:
 
 ```bash
-TMP="$(mktemp -d)" && cd "$TMP" && curl -fL https://github.com/Rambo-Junior/lidl-blokkkereso/releases/download/v3.0.1/lidl-blokkkereso-v3.0.1-linux.zip -o lidl.zip && unzip -q lidl.zip && cd lidl-blokkkereso-v3.0.1 && ./install-v3.sh && ./promote-to-stable.sh
+sudo apt update && sudo apt install -y python3 curl unzip && TMP="$(mktemp -d)" && (cd "$TMP" && curl -fLO https://github.com/Rambo-Junior/lidl-blokkkereso/releases/download/v3.0.2/lidl-blokkkereso-v3.0.2-linux.zip && curl -fLO https://github.com/Rambo-Junior/lidl-blokkkereso/releases/download/v3.0.2/SHA256SUMS && grep 'lidl-blokkkereso-v3.0.2-linux.zip' SHA256SUMS | sha256sum -c - && unzip -q lidl-blokkkereso-v3.0.2-linux.zip && cd lidl-blokkkereso-v3.0.2 && ./install-v3.sh && ./promote-to-stable.sh) && rm -rf "$TMP" && lidl-blokkkereso --version
 ```
 
-A telepítő megnyitja a Mozilla által aláírt Firefox-kiegészítőt; a Firefoxban egyszer jóvá kell hagyni a telepítést.
+Első telepítéskor a Firefoxban egyszer jóvá kell hagyni a Mozilla által aláírt kiegészítő telepítését. Meglévő, aktív kiegészítő esetén a telepítő nem nyit új telepítőlapot.
 
-Ezután:
+Ellenőrzés:
 
 ```bash
 lidl-blokkkereso --session-status
@@ -65,6 +69,8 @@ lidl-blokkkereso
 - `s` statisztika
 - `D` helyi index törlése
 - `q` kilépés / vissza
+
+Az `r` és a `lidl-blokkkereso --sync` ugyanazt az inkrementális szinkronizáló kódot használja.
 
 ## CLI
 
@@ -88,23 +94,35 @@ Adatvédelem: [PRIVACY.md](PRIVACY.md)
 Biztonság: [SECURITY.md](SECURITY.md)
 Licenc: MIT
 
-## v3.0.1: biztonságos telepítés és hibaelhárítás
+## v3.0.2: automatikus Firefox bridge újrapróbálás
 
-A telepítő az eredeti, Mozilla által aláírt **3.0.0-s** XPI-t először
-`~/.local/share/lidl-blokkkereso-v3/lidl-blokkkereso-v3-signed.xpi`
-útvonalra menti, és csak utána nyitja meg a Firefoxban. Az ideiglenes
-letöltési könyvtár ezért a telepítő után biztonságosan törölhető.
-Az első telepítésnél a Firefoxban hagyd jóvá a kiegészítőt és jelentkezz be a Lidlbe.
+A Firefox időnként megnyithatja a Lidl triggerlapot úgy, hogy a kiegészítő első content-script indítása nem jelentkezik vissza a Native Messaging hostnak. Ilyenkor a v3.0.1 30 másodperc után hibával leállt, miközben egy következő kézi próbálkozás rendszerint azonnal működött.
 
-A 3.0.1-es CLI a Firefox első válaszának hiányát 30 másodperc után jelzi,
-és 90 másodperces elakadást is felismer. Ellenőrzés:
-`lidl-blokkkereso --session-status`.
-Ha `Ctrl+C`-vel megszakítod a TUI-ban az `r` szinkront, a terminál helyreáll;
-a már megnyitott Firefox-lap a háttérben még dolgozhat. Újabb szinkron
-előtt várd meg a Firefox-lapon a művelet végét.
+A v3.0.2 ezt automatikusan kezeli:
 
-A teljes v3.0.1 telepítés GitHub Release-ből SHA256 ellenőrzéssel:
+- ha az első Firefox-triggerre **30 másodpercig semmilyen válasz nem érkezik**, a program egyszer új triggerlapot nyit;
+- az újrapróbálás külön `runId`-t használ;
+- valódi Lidl/API-, Native Messaging- vagy futás közbeni hibákat nem rejt el és nem próbál végtelenül újra;
+- a 90 másodperces előrehaladás-ellenőrzés változatlanul megmarad;
+- a TUI `r` és a CLI `--sync` ugyanazt a retry-logikát használja.
+
+A startup retry kikapcsolható diagnosztikához:
 
 ```bash
-sudo apt update && sudo apt install -y python3 curl unzip && TMP="$(mktemp -d)" && (cd "$TMP" && curl -fLO https://github.com/Rambo-Junior/lidl-blokkkereso/releases/download/v3.0.1/lidl-blokkkereso-v3.0.1-linux.zip && curl -fLO https://github.com/Rambo-Junior/lidl-blokkkereso/releases/download/v3.0.1/SHA256SUMS && grep 'lidl-blokkkereso-v3.0.1-linux.zip' SHA256SUMS | sha256sum -c - && unzip -q lidl-blokkkereso-v3.0.1-linux.zip && cd lidl-blokkkereso-v3.0.1 && ./install-v3.sh && ./promote-to-stable.sh) && rm -rf "$TMP" && echo 'KÉSZ. Firefox jóváhagyás után: lidl-blokkkereso --session-status'
+LIDL_V3_STARTUP_RETRIES=0 lidl-blokkkereso --sync
 ```
+
+Egynél több retry is kérhető, bár normál használatra az alapértelmezett egy próbálkozás ajánlott:
+
+```bash
+LIDL_V3_STARTUP_RETRIES=2 lidl-blokkkereso --sync
+```
+
+Ha `Ctrl+C`-vel megszakítod a TUI-ban az `r` szinkront, a terminál helyreáll. A már megnyitott Firefox-lap ettől még befejezheti a futását.
+
+## v3.0.1 javítások
+
+- szabályos `Ctrl+C`-kezelés és curses terminál-helyreállítás;
+- 30 másodperces válaszhiány- és 90 másodperces előrehaladás-ellenőrzés;
+- az aláírt XPI tartós helyre mentése még az ideiglenes telepítési könyvtár törlése előtt;
+- meglévő aktív Firefox-kiegészítő esetén nincs felesleges újratelepítési ablak.

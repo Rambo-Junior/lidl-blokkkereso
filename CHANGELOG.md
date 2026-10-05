@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.0.2
+
+- Ha a Firefox-kiegészítő az első triggerre 30 másodpercig egyáltalán nem válaszol, a Linux alkalmazás egyszer automatikusan újrapróbálja a műveletet.
+- Az újrapróbálás külön `runId`-t használ, így az első, esetleg későn elinduló Firefox-lap nem ugyanabba a futási könyvtárba ír.
+- Az automatikus retry az interaktív `r` / `R` és a CLI `--sync` / `--full-sync`, valamint a `--session-status` útvonalon is működik.
+- Nem-startup jellegű bridge/API hibák továbbra is azonnal láthatók; nincs végtelen újrapróbálás.
+- Új `LIDL_V3_STARTUP_RETRIES` környezeti változó; alapértéke `1`, `0`-val kikapcsolható.
+- A Firefox-kiegészítő változatlanul a Mozilla által aláírt v3.0.0; új AMO-aláírás nem szükséges.
+- Meglévő SQLite index teljesen kompatibilis; nincs adatbázismigráció.
+
 ## 3.0.1
 
 - `Ctrl+C`-kezelés és curses terminál helyreállítás a TUI-frissítéseknél.

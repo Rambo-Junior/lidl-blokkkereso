@@ -7,7 +7,7 @@ set -Eeuo pipefail
 
 APP_ID="lidl-blokkkereso"
 APP_NAME="Lidl blokk- és termékkereső"
-APP_VERSION="3.0.1"
+APP_VERSION="3.0.2"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/${APP_ID}"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/${APP_ID}"
 PY_APP="$CACHE_DIR/lidl_app.py"
@@ -144,7 +144,7 @@ from typing import Any, Iterable
 
 
 APP_NAME = "Lidl blokk- és termékkereső"
-APP_VERSION = "3.0.1"
+APP_VERSION = "3.0.2"
 BASE_URL = "https://www.lidl.hu"
 LOGIN_URL = (
     BASE_URL
@@ -169,6 +169,7 @@ V3_HOST_HELPER = Path.home() / ".local/lib/lidl-blokkkereso-v3/lidl-native-host.
 V3_SYNC_TIMEOUT_SECONDS = int(os.environ.get("LIDL_V3_SYNC_TIMEOUT", "600"))
 V3_PROBE_TIMEOUT_SECONDS = int(os.environ.get("LIDL_V3_PROBE_TIMEOUT", "30"))
 V3_KEEP_RUNS = os.environ.get("LIDL_V3_KEEP_RUNS", "0") == "1"
+V3_STARTUP_RETRIES = max(0, int(os.environ.get("LIDL_V3_STARTUP_RETRIES", "1")))
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 V3_RUNS_DIR.mkdir(parents=True, exist_ok=True)
@@ -612,6 +613,11 @@ class BrowserBridgeError(RuntimeError):
     pass
 
 
+class BrowserBridgeNoResponseError(BrowserBridgeError):
+    # Retryzható eset: a Firefox-kiegészítő a startup ablakban nem jelentkezett.
+    pass
+
+
 def open_in_normal_firefox(url: str) -> None:
     """A felhasználó valódi Firefoxát nyitja meg; sem Playwright, sem külön profil nincs."""
     for executable in ("firefox", "firefox-esr"):
@@ -650,7 +656,7 @@ def _ensure_v3_bridge_installed() -> None:
         raise BrowserBridgeError(
             "A v3 Native Messaging host nincs telepítve. Hiányzik:\n  - "
             + "\n  - ".join(missing)
-            + "\nFuttasd a v3.0.0 csomag install-v3.sh telepítőjét."
+            + "\nFuttasd az aktuális v3 kiadás install-v3.sh telepítőjét."
         )
 
 
@@ -740,7 +746,7 @@ def _wait_for_v3_run(run_id: str, timeout: int) -> dict[str, Any]:
                     f"{_run_dir(run_id) / 'status.json'}"
                 )
         elif now - started >= startup_timeout:
-            raise BrowserBridgeError(
+            raise BrowserBridgeNoResponseError(
                 f"{int(startup_timeout)} másodpercen belül semmilyen válasz nem érkezett "
                 "a Firefox kiegészítőtől.\n"
                 "Ellenőrizd az about:addons oldalon, hogy a Lidl blokkkereső v3 aktív-e; "
@@ -773,6 +779,42 @@ def _trigger_url(run_id: str, mode: str | None = None, probe: bool = False) -> s
     return HOME_URL + suffix
 
 
+def _start_v3_run(
+    prefix: str,
+    timeout: int,
+    *,
+    mode: str | None = None,
+    probe: bool = False,
+) -> tuple[str, Path, dict[str, Any]]:
+    # Teljes startup-válaszhiánynál limitált automatikus újrapróbálás.
+    # Minden próbálkozás külön runId-t kap.
+    attempts = V3_STARTUP_RETRIES + 1
+    last_error: BrowserBridgeNoResponseError | None = None
+
+    for attempt in range(1, attempts + 1):
+        run_id = _new_run_id(prefix)
+        run_dir = _run_dir(run_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        open_in_normal_firefox(_trigger_url(run_id, mode=mode, probe=probe))
+
+        try:
+            status = _wait_for_v3_run(run_id, timeout)
+            return run_id, run_dir, status
+        except BrowserBridgeNoResponseError as error:
+            last_error = error
+            if attempt >= attempts:
+                raise
+            print(
+                "Firefox-kiegészítő: az első triggerre nem érkezett válasz. "
+                f"Automatikus újrapróbálás {attempt}/{V3_STARTUP_RETRIES}…",
+                flush=True,
+            )
+            time.sleep(1.0)
+
+    assert last_error is not None
+    raise last_error
+
+
 def print_firefox_info() -> None:
     print("Firefox v3 bridge:")
     print(f"- Native host manifest: {V3_HOST_MANIFEST} · {'OK' if V3_HOST_MANIFEST.is_file() else 'HIÁNYZIK'}")
@@ -785,11 +827,12 @@ def session_status() -> bool:
     try:
         _ensure_v3_bridge_installed()
         _cleanup_old_v3_runs()
-        run_id = _new_run_id("probe")
-        _run_dir(run_id).mkdir(parents=True, exist_ok=True)
         print("Normál Firefox Lidl-munkamenetének ellenőrzése v3 bridge-dzsel…")
-        open_in_normal_firefox(_trigger_url(run_id, probe=True))
-        status = _wait_for_v3_run(run_id, V3_PROBE_TIMEOUT_SECONDS)
+        run_id, _, status = _start_v3_run(
+            "probe",
+            V3_PROBE_TIMEOUT_SECONDS,
+            probe=True,
+        )
         http_status = int(status.get("httpStatus") or 0)
         if http_status == 200 and status.get("ok"):
             print(
@@ -824,13 +867,11 @@ def sync_index(database: Database, full: bool = False) -> None:
     else:
         print("Inkrementális frissítés a normál Firefoxban.")
 
-    run_id = _new_run_id("sync")
-    run_dir = _run_dir(run_id)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    trigger = _trigger_url(run_id, mode=mode)
-    open_in_normal_firefox(trigger)
-
-    status = _wait_for_v3_run(run_id, V3_SYNC_TIMEOUT_SECONDS)
+    run_id, run_dir, status = _start_v3_run(
+        "sync",
+        V3_SYNC_TIMEOUT_SECONDS,
+        mode=mode,
+    )
     details_dir = run_dir / "details"
     detail_files = sorted(details_dir.glob("*.json")) if details_dir.is_dir() else []
 
