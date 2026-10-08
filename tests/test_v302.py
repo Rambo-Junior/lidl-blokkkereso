@@ -59,9 +59,9 @@ class RetryTests(unittest.TestCase):
         opener.assert_called_once()
 
 class ReleaseTests(unittest.TestCase):
-    def test_version_is_302(self):
+    def test_version_is_current(self):
         p=subprocess.run(["bash",str(ROOT/"lidl-blokkkereso.sh"),"--version"],capture_output=True,text=True,timeout=8)
-        self.assertEqual(p.returncode,0,p.stderr); self.assertIn("3.0.2",p.stdout)
+        self.assertEqual(p.returncode,0,p.stderr); self.assertIn("3.1.0",p.stdout)
     def test_python_payload_compiles(self):
         shell=(ROOT/"lidl-blokkkereso.sh").read_text(encoding="utf-8"); script=shell.split("__LIDL_PYTHON_APP_BEGIN__\n",1)[1].split("\n__LIDL_PYTHON_APP_END__",1)[0]; compile(script,str(ROOT/"lidl-blokkkereso.sh"),"exec")
     def test_v302_release_builder_preserves_xpi_bytes(self):

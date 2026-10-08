@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.1.0
+
+- A fő TUI képernyőn megjelent az összes költés, az aktuális és előző havi költés, a havi változás, az utolsó 30 nap és az átlagos blokkérték.
+- Új `A` analitika nézet öt oldallal: 12 havi költési diagram, 30 napos trend, top blokkok, top termékek és üzletstatisztika.
+- Unicode blokkdiagram és sparkline közvetlenül a terminálban, külső Python-csomag nélkül.
+- Új `--report` parancs önálló, helyben generált HTML analitikához; ugyanaz a riport az analitika nézetből `H`-val is megnyitható.
+- A HTML riport külső JavaScript/CDN nélkül működik és nem küld adatot hálózatra.
+- A `--stats` kimenet pénzügyi aggregátumokkal bővült.
+- Az analitikai lekérdezések kizárólag a meglévő SQLite indexet használják; nincs adatbázismigráció.
+- A v3.0.2 Firefox-startup retry és a v3.0.1 telepítési/timeout javításai változatlanul megmaradtak.
+- A Firefox-kiegészítő továbbra is a Mozilla által aláírt v3.0.0; új AMO-aláírás nem szükséges.
+
 ## 3.0.2
 
 - Ha a Firefox-kiegészítő az első triggerre 30 másodpercig egyáltalán nem válaszol, a Linux alkalmazás egyszer automatikusan újrapróbálja a műveletet.

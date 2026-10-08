@@ -7,7 +7,7 @@ set -Eeuo pipefail
 
 APP_ID="lidl-blokkkereso"
 APP_NAME="Lidl blokk- és termékkereső"
-APP_VERSION="3.0.2"
+APP_VERSION="3.1.0"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/${APP_ID}"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/${APP_ID}"
 PY_APP="$CACHE_DIR/lidl_app.py"
@@ -144,7 +144,7 @@ from typing import Any, Iterable
 
 
 APP_NAME = "Lidl blokk- és termékkereső"
-APP_VERSION = "3.0.2"
+APP_VERSION = "3.1.0"
 BASE_URL = "https://www.lidl.hu"
 LOGIN_URL = (
     BASE_URL
@@ -552,6 +552,51 @@ class Database:
         distinct_items = self.connection.execute(
             "SELECT COUNT(DISTINCT CASE WHEN article_id <> '' THEN article_id ELSE normalized END) FROM items"
         ).fetchone()[0]
+
+        today = dt.datetime.now().astimezone().date()
+        current_month = today.strftime("%Y-%m")
+        previous_month = (today.replace(day=1) - dt.timedelta(days=1)).strftime("%Y-%m")
+        last_30_start = (today - dt.timedelta(days=29)).isoformat()
+
+        spend_total, average_receipt = self.connection.execute(
+            """
+            SELECT COALESCE(SUM(total_amount), 0), COALESCE(AVG(total_amount), 0)
+            FROM receipts
+            WHERE indexed_ok=1 AND total_amount IS NOT NULL AND total_amount > 0
+            """
+        ).fetchone()
+        current_month_spend = self.connection.execute(
+            """
+            SELECT COALESCE(SUM(total_amount), 0)
+            FROM receipts
+            WHERE indexed_ok=1 AND total_amount > 0 AND substr(receipt_date,1,7)=?
+            """,
+            (current_month,),
+        ).fetchone()[0]
+        previous_month_spend = self.connection.execute(
+            """
+            SELECT COALESCE(SUM(total_amount), 0)
+            FROM receipts
+            WHERE indexed_ok=1 AND total_amount > 0 AND substr(receipt_date,1,7)=?
+            """,
+            (previous_month,),
+        ).fetchone()[0]
+        last_30_days_spend = self.connection.execute(
+            """
+            SELECT COALESCE(SUM(total_amount), 0)
+            FROM receipts
+            WHERE indexed_ok=1 AND total_amount > 0 AND substr(receipt_date,1,10)>=?
+            """,
+            (last_30_start,),
+        ).fetchone()[0]
+        month_change_pct = None
+        if float(previous_month_spend or 0) > 0:
+            month_change_pct = (
+                (float(current_month_spend or 0) - float(previous_month_spend))
+                / float(previous_month_spend)
+                * 100.0
+            )
+
         return {
             "receipts": receipts,
             "pending": pending,
@@ -559,7 +604,124 @@ class Database:
             "distinct_items": distinct_items,
             "last_refresh": self.get_meta("last_refresh"),
             "full_sync_complete": self.get_meta("full_sync_complete", "0") == "1",
+            "spend_total": float(spend_total or 0),
+            "average_receipt": float(average_receipt or 0),
+            "current_month": current_month,
+            "current_month_spend": float(current_month_spend or 0),
+            "previous_month": previous_month,
+            "previous_month_spend": float(previous_month_spend or 0),
+            "month_change_pct": month_change_pct,
+            "last_30_days_spend": float(last_30_days_spend or 0),
         }
+
+    def monthly_spend(self, months: int = 12) -> list[dict[str, Any]]:
+        months = max(1, min(int(months), 60))
+        today = dt.datetime.now().astimezone().date()
+        current_index = today.year * 12 + today.month - 1
+        keys: list[str] = []
+        for offset in range(months - 1, -1, -1):
+            index = current_index - offset
+            year, month0 = divmod(index, 12)
+            keys.append(f"{year:04d}-{month0 + 1:02d}")
+        rows = self.connection.execute(
+            """
+            SELECT substr(receipt_date,1,7) AS month,
+                   COUNT(*) AS receipts,
+                   COALESCE(SUM(total_amount),0) AS total
+            FROM receipts
+            WHERE indexed_ok=1 AND total_amount > 0
+              AND substr(receipt_date,1,7) BETWEEN ? AND ?
+            GROUP BY substr(receipt_date,1,7)
+            ORDER BY month
+            """,
+            (keys[0], keys[-1]),
+        ).fetchall()
+        by_month = {
+            str(row["month"]): {"receipts": int(row["receipts"] or 0), "total": float(row["total"] or 0)}
+            for row in rows
+        }
+        return [
+            {
+                "month": key,
+                "receipts": by_month.get(key, {}).get("receipts", 0),
+                "total": by_month.get(key, {}).get("total", 0.0),
+            }
+            for key in keys
+        ]
+
+    def daily_spend(self, days: int = 30) -> list[dict[str, Any]]:
+        days = max(1, min(int(days), 366))
+        today = dt.datetime.now().astimezone().date()
+        dates = [(today - dt.timedelta(days=offset)).isoformat() for offset in range(days - 1, -1, -1)]
+        rows = self.connection.execute(
+            """
+            SELECT substr(receipt_date,1,10) AS day,
+                   COUNT(*) AS receipts,
+                   COALESCE(SUM(total_amount),0) AS total
+            FROM receipts
+            WHERE indexed_ok=1 AND total_amount > 0
+              AND substr(receipt_date,1,10) BETWEEN ? AND ?
+            GROUP BY substr(receipt_date,1,10)
+            ORDER BY day
+            """,
+            (dates[0], dates[-1]),
+        ).fetchall()
+        by_day = {
+            str(row["day"]): {"receipts": int(row["receipts"] or 0), "total": float(row["total"] or 0)}
+            for row in rows
+        }
+        return [
+            {
+                "day": day,
+                "receipts": by_day.get(day, {}).get("receipts", 0),
+                "total": by_day.get(day, {}).get("total", 0.0),
+            }
+            for day in dates
+        ]
+
+    def top_receipts(self, limit: int = 10) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT id, receipt_date, total_amount, articles_count, store
+            FROM receipts
+            WHERE indexed_ok=1 AND total_amount > 0
+            ORDER BY total_amount DESC, receipt_date DESC
+            LIMIT ?
+            """,
+            (max(1, min(int(limit), 100)),),
+        ).fetchall()
+
+    def top_products(self, limit: int = 20) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT CASE WHEN article_id <> '' THEN article_id ELSE normalized END AS product_key,
+                   MAX(description) AS description,
+                   COUNT(DISTINCT receipt_id) AS receipt_count,
+                   COALESCE(SUM(quantity),0) AS quantity,
+                   COALESCE(SUM(COALESCE(item_total, COALESCE(unit_price,0) * COALESCE(quantity,1))),0) AS spend
+            FROM items
+            GROUP BY CASE WHEN article_id <> '' THEN article_id ELSE normalized END
+            ORDER BY receipt_count DESC, quantity DESC, spend DESC
+            LIMIT ?
+            """,
+            (max(1, min(int(limit), 200)),),
+        ).fetchall()
+
+    def store_stats(self, limit: int = 50) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT CASE WHEN trim(COALESCE(store,''))='' THEN 'Ismeretlen üzlet' ELSE store END AS store_name,
+                   COUNT(*) AS receipt_count,
+                   COALESCE(SUM(total_amount),0) AS spend,
+                   COALESCE(AVG(total_amount),0) AS average_receipt
+            FROM receipts
+            WHERE indexed_ok=1 AND total_amount > 0
+            GROUP BY CASE WHEN trim(COALESCE(store,''))='' THEN 'Ismeretlen üzlet' ELSE store END
+            ORDER BY spend DESC, receipt_count DESC
+            LIMIT ?
+            """,
+            (max(1, min(int(limit), 200)),),
+        ).fetchall()
 
     def search(self, query: str, limit: int = 300) -> list[sqlite3.Row]:
         tokens = [normalize(part) for part in query.split() if part.strip()]
@@ -929,6 +1091,158 @@ def wrap_text(value: str, width: int) -> list[str]:
     return textwrap.wrap(value, max(10, width), replace_whitespace=False) or [""]
 
 
+def percent_text(value: float | None) -> str:
+    if value is None:
+        return "–"
+    return f"{value:+.1f}%".replace(".", ",")
+
+
+def bar_text(value: float, maximum: float, width: int) -> str:
+    width = max(1, int(width))
+    if maximum <= 0 or value <= 0:
+        return ""
+    filled = max(1, min(width, int(round((float(value) / float(maximum)) * width))))
+    return "█" * filled
+
+
+def sparkline(values: Iterable[float], width: int | None = None) -> str:
+    blocks = "▁▂▃▄▅▆▇█"
+    data = [max(0.0, float(value or 0)) for value in values]
+    if width is not None and width > 0 and len(data) > width:
+        compressed: list[float] = []
+        for index in range(width):
+            start = index * len(data) // width
+            end = max(start + 1, (index + 1) * len(data) // width)
+            compressed.append(max(data[start:end]))
+        data = compressed
+    if not data:
+        return ""
+    maximum = max(data)
+    if maximum <= 0:
+        return blocks[0] * len(data)
+    return "".join(
+        blocks[min(len(blocks) - 1, int(round(value / maximum * (len(blocks) - 1))))]
+        for value in data
+    )
+
+
+def generate_html_report(database: Database, path: Path | None = None) -> Path:
+    path = path or (DATA_DIR / "lidl-analitika.html")
+    path = Path(path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    stats = database.stats()
+    months = database.monthly_spend(12)
+    days = database.daily_spend(30)
+    top_receipts = database.top_receipts(10)
+    top_products = database.top_products(20)
+    stores = database.store_stats(50)
+    max_month = max((float(row["total"]) for row in months), default=0.0) or 1.0
+    max_day = max((float(row["total"]) for row in days), default=0.0) or 1.0
+
+    esc = html.escape
+    monthly_rows = "".join(
+        f'<div class="bar-row"><span>{esc(str(row["month"]))}</span>'
+        f'<div class="bar-track"><i style="width:{float(row["total"])/max_month*100:.2f}%"></i></div>'
+        f'<b>{esc(money(row["total"]))}</b><small>{int(row["receipts"])} blokk</small></div>'
+        for row in months
+    )
+    daily_bars = "".join(
+        f'<div class="day" title="{esc(str(row["day"]))}: {esc(money(row["total"]))}">'
+        f'<i style="height:{max(2.0, float(row["total"])/max_day*120):.1f}px"></i>'
+        f'<span>{esc(str(row["day"])[8:])}</span></div>'
+        for row in days
+    )
+    receipt_rows = "".join(
+        f"<tr><td>{esc(pretty_date(row['receipt_date']))}</td>"
+        f"<td>{esc(str(row['store'] or '–'))}</td>"
+        f"<td>{int(row['articles_count'] or 0)}</td>"
+        f"<td class='num'>{esc(money(row['total_amount']))}</td></tr>"
+        for row in top_receipts
+    )
+    product_rows = "".join(
+        f"<tr><td>{esc(str(row['description'] or '–'))}</td>"
+        f"<td class='num'>{int(row['receipt_count'] or 0)}</td>"
+        f"<td class='num'>{float(row['quantity'] or 0):g}</td>"
+        f"<td class='num'>{esc(money(row['spend']))}</td></tr>"
+        for row in top_products
+    )
+    store_rows = "".join(
+        f"<tr><td>{esc(str(row['store_name'] or '–'))}</td>"
+        f"<td class='num'>{int(row['receipt_count'] or 0)}</td>"
+        f"<td class='num'>{esc(money(row['average_receipt']))}</td>"
+        f"<td class='num'>{esc(money(row['spend']))}</td></tr>"
+        for row in stores
+    )
+
+    generated = dt.datetime.now().astimezone().strftime("%Y.%m.%d. %H:%M")
+    change = esc(percent_text(stats["month_change_pct"]))
+    document = f'''<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lidl analitika</title>
+<style>
+:root {{--bg:#0d1117;--card:#161b22;--text:#e6edf3;--muted:#8b949e;--line:#30363d;--accent:#2ea043;--accent2:#58a6ff}}
+* {{box-sizing:border-box}}
+body {{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,sans-serif}}
+main {{max-width:1200px;margin:auto;padding:28px}}
+h1,h2 {{margin:.2em 0 .7em}}
+.muted {{color:var(--muted)}}
+.cards {{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:20px 0}}
+.card,.panel {{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}}
+.card b {{display:block;font-size:24px;margin-top:4px}}
+.grid {{display:grid;grid-template-columns:repeat(auto-fit,minmax(430px,1fr));gap:16px}}
+.bar-row {{display:grid;grid-template-columns:68px 1fr 105px 60px;gap:8px;align-items:center;margin:7px 0}}
+.bar-track {{height:14px;background:#21262d;border-radius:99px;overflow:hidden}}
+.bar-track i {{display:block;height:100%;background:var(--accent);border-radius:99px}}
+.bar-row b,.bar-row small {{text-align:right}}
+.daily {{height:155px;display:flex;gap:3px;align-items:flex-end;border-bottom:1px solid var(--line);padding-top:10px}}
+.day {{flex:1;min-width:3px;text-align:center}}
+.day i {{display:block;background:var(--accent2);min-height:2px;border-radius:3px 3px 0 0}}
+.day span {{display:block;color:var(--muted);font-size:8px;margin-top:4px}}
+table {{width:100%;border-collapse:collapse}}
+th,td {{padding:8px;border-bottom:1px solid var(--line);text-align:left}}
+th {{color:var(--muted)}}
+.num {{text-align:right;white-space:nowrap}}
+footer {{margin-top:24px;color:var(--muted)}}
+@media(max-width:600px) {{main {{padding:14px}} .grid {{grid-template-columns:1fr}} .bar-row {{grid-template-columns:58px 1fr 90px}} .bar-row small {{display:none}}}}
+</style>
+</head>
+<body><main>
+<h1>Lidl költési analitika</h1>
+<div class="muted">Helyi riport · generálva: {esc(generated)}</div>
+<div class="cards">
+<div class="card"><span>Összes költés</span><b>{esc(money(stats['spend_total']))}</b></div>
+<div class="card"><span>{esc(stats['current_month'])}</span><b>{esc(money(stats['current_month_spend']))}</b><small class="muted">előző hónaphoz: {change}</small></div>
+<div class="card"><span>Utolsó 30 nap</span><b>{esc(money(stats['last_30_days_spend']))}</b></div>
+<div class="card"><span>Átlagos blokk</span><b>{esc(money(stats['average_receipt']))}</b></div>
+<div class="card"><span>Blokkok</span><b>{int(stats['receipts'])}</b><small class="muted">{int(stats['items'])} tétel</small></div>
+</div>
+<div class="grid">
+<section class="panel"><h2>Havi költés · 12 hónap</h2>{monthly_rows}</section>
+<section class="panel"><h2>Napi költés · 30 nap</h2><div class="daily">{daily_bars}</div><p class="muted">Összesen: {esc(money(stats['last_30_days_spend']))}</p></section>
+</div>
+<section class="panel" style="margin-top:16px"><h2>Top 10 legdrágább blokk</h2><table><thead><tr><th>Dátum</th><th>Üzlet</th><th>Tétel</th><th class="num">Összeg</th></tr></thead><tbody>{receipt_rows}</tbody></table></section>
+<section class="panel" style="margin-top:16px"><h2>Top 20 leggyakoribb termék</h2><table><thead><tr><th>Termék</th><th class="num">Blokk</th><th class="num">Menny.</th><th class="num">Összköltés</th></tr></thead><tbody>{product_rows}</tbody></table></section>
+<section class="panel" style="margin-top:16px"><h2>Üzletek</h2><table><thead><tr><th>Üzlet</th><th class="num">Blokk</th><th class="num">Átlag</th><th class="num">Költés</th></tr></thead><tbody>{store_rows}</tbody></table></section>
+<footer>Az adatok kizárólag a helyi SQLite indexből készültek. A riport nem tölt fel adatot sehova.</footer>
+</main></body></html>'''
+    path.write_text(document, encoding="utf-8")
+    return path
+
+
+def open_html_report(database: Database) -> Path:
+    path = generate_html_report(database)
+    print(f"HTML analitika elkészült: {path}")
+    try:
+        webbrowser.open(path.resolve().as_uri(), new=2)
+    except Exception as error:
+        print(f"A böngésző automatikus megnyitása nem sikerült: {error}")
+    return path
+
+
 class Tui:
     def __init__(self, database: Database) -> None:
         self.db = database
@@ -987,6 +1301,8 @@ class Tui:
                 self._external_action(screen, lambda: open_online(receipt_id))
             elif key in (ord("s"), ord("S")):
                 self._stats_popup(screen)
+            elif key in (ord("a"), ord("A")):
+                self._analytics_view(screen)
             elif key in (ord("D"),):
                 if self._confirm(screen, "BIZTOSAN törlöd a teljes helyi blokkindexet?"):
                     self.db.clear_index()
@@ -1002,8 +1318,8 @@ class Tui:
     def _draw(self, screen: Any) -> None:
         screen.erase()
         height, width = screen.getmaxyx()
-        if height < 16 or width < 72:
-            screen.addstr(0, 0, "A terminál legyen legalább 72×16 karakteres.")
+        if height < 18 or width < 72:
+            screen.addstr(0, 0, "A terminál legyen legalább 72×18 karakteres.")
             screen.refresh()
             return
         stats = self.db.stats()
@@ -1017,13 +1333,29 @@ class Tui:
             f" {stats['receipts']} blokk · {stats['items']} tétel · {stats['distinct_items']} különböző · függő: {stats['pending']}",
             width - 1,
         )
+        screen.addnstr(
+            2,
+            0,
+            f" Összes költés: {money(stats['spend_total'])} · "
+            f"{stats['current_month']}: {money(stats['current_month_spend'])} · "
+            f"átlag blokk: {money(stats['average_receipt'])}",
+            width - 1,
+            curses.A_BOLD,
+        )
+        screen.addnstr(
+            3,
+            0,
+            f" Előző hónap: {money(stats['previous_month_spend'])} · változás: {percent_text(stats['month_change_pct'])} · "
+            f"utolsó 30 nap: {money(stats['last_30_days_spend'])}",
+            width - 1,
+        )
         last = pretty_date(stats["last_refresh"]) if stats["last_refresh"] else "még nem volt"
-        screen.addnstr(2, 0, f" Utolsó frissítés: {last}", width - 1)
-        screen.hline(3, 0, curses.ACS_HLINE, width)
-        screen.addnstr(4, 0, f" Keresés: {self.query or '—'}", width - 1, curses.A_BOLD)
-        screen.addnstr(5, 0, f" Találatok: {len(self.results)}", width - 1)
+        screen.addnstr(4, 0, f" Utolsó frissítés: {last}", width - 1)
+        screen.hline(5, 0, curses.ACS_HLINE, width)
+        screen.addnstr(6, 0, f" Keresés: {self.query or '—'}", width - 1, curses.A_BOLD)
+        screen.addnstr(7, 0, f" Találatok: {len(self.results)}", width - 1)
 
-        list_top = 7
+        list_top = 9
         list_bottom = height - 4
         visible = max(1, list_bottom - list_top)
         if self.selected < self.offset:
@@ -1041,7 +1373,7 @@ class Tui:
             screen.addnstr(list_top + display_row, 1, line, width - 3, attr)
 
         screen.hline(height - 3, 0, curses.ACS_HLINE, width)
-        help_line = "/ keres · ↑↓ · ENTER blokk · r frissít · R teljes · l blokkok · L belépés · o online · s stat · D index · q vége"
+        help_line = "/ keres · ↑↓ · ENTER blokk · r frissít · R teljes · l blokkok · A analitika · s stat · D index · q vége"
         screen.addnstr(height - 2, 0, help_line, width - 1)
         screen.addnstr(height - 1, 0, " " + self.message, width - 1, curses.A_DIM)
         screen.refresh()
@@ -1114,21 +1446,127 @@ class Tui:
             f"Indexelt blokkok: {stats['receipts']}",
             f"Terméktételek: {stats['items']}",
             f"Különböző termékek: {stats['distinct_items']}",
+            f"Összes költés: {money(stats['spend_total'])}",
+            f"Aktuális hónap: {money(stats['current_month_spend'])}",
+            f"Előző hónap: {money(stats['previous_month_spend'])}",
+            f"Havi változás: {percent_text(stats['month_change_pct'])}",
+            f"Utolsó 30 nap: {money(stats['last_30_days_spend'])}",
+            f"Átlagos blokk: {money(stats['average_receipt'])}",
             f"Függő/hibás blokkok: {stats['pending']}",
             f"Teljes lista elkészült: {'igen' if stats['full_sync_complete'] else 'nem'}",
             f"Utolsó frissítés: {pretty_date(stats['last_refresh']) if stats['last_refresh'] else '–'}",
             "",
-            "Bezárás: bármely billentyű",
+            "A = részletes analitika · Bezárás: bármely más billentyű",
         ]
         height, width = screen.getmaxyx()
-        box_width = min(width - 4, 64)
+        box_width = min(width - 4, 72)
         box_height = min(height - 2, len(lines) + 4)
         box = curses.newwin(box_height, box_width, (height - box_height) // 2, (width - box_width) // 2)
         box.box()
         for index, line in enumerate(lines[: box_height - 2], start=1):
             box.addnstr(index, 2, line, box_width - 4, curses.A_BOLD if index == 1 else curses.A_NORMAL)
         box.refresh()
-        box.getch()
+        key = box.getch()
+        if key in (ord("a"), ord("A")):
+            self._analytics_view(screen)
+
+    def _analytics_view(self, screen: Any) -> None:
+        page = 0
+        titles = ["Havi költés", "Napi trend", "Top blokkok", "Top termékek", "Üzletek"]
+        while True:
+            screen.erase()
+            height, width = screen.getmaxyx()
+            if height < 16 or width < 72:
+                screen.addstr(0, 0, "Az analitikához legalább 72×16 karakteres terminál kell.")
+                screen.refresh()
+                if screen.getch() in (ord("q"), ord("Q"), 27):
+                    return
+                continue
+
+            stats = self.db.stats()
+            header = f" Lidl analitika · {page + 1}/5 · {titles[page]} "
+            screen.addnstr(0, 0, header, width - 1, curses.A_BOLD)
+            screen.addnstr(
+                1,
+                0,
+                f" Összes: {money(stats['spend_total'])} · hónap: {money(stats['current_month_spend'])} · "
+                f"30 nap: {money(stats['last_30_days_spend'])} · átlag: {money(stats['average_receipt'])}",
+                width - 1,
+            )
+            screen.hline(2, 0, curses.ACS_HLINE, width)
+            content_top = 3
+            content_bottom = height - 3
+            visible = max(1, content_bottom - content_top)
+
+            lines: list[str] = []
+            if page == 0:
+                rows = self.db.monthly_spend(12)
+                maximum = max((float(row["total"]) for row in rows), default=0.0)
+                bar_width = max(8, width - 38)
+                for row in rows:
+                    lines.append(
+                        f"{row['month']} {bar_text(row['total'], maximum, bar_width):<{bar_width}} "
+                        f"{money(row['total']):>14}  {row['receipts']:>3} blokk"
+                    )
+            elif page == 1:
+                rows = self.db.daily_spend(30)
+                values = [float(row["total"]) for row in rows]
+                lines.append("30 nap  " + sparkline(values, max(10, width - 10)))
+                active = sum(1 for value in values if value > 0)
+                lines.append(f"Aktív vásárlási napok: {active} / 30 · összesen: {money(sum(values))}")
+                lines.append("")
+                maximum = max(values, default=0.0)
+                bar_width = max(8, width - 35)
+                nonzero = [row for row in rows if float(row["total"]) > 0]
+                for row in nonzero[-max(1, visible - 3):]:
+                    lines.append(
+                        f"{row['day']} {bar_text(row['total'], maximum, bar_width):<{bar_width}} {money(row['total']):>14}"
+                    )
+                if not nonzero:
+                    lines.append("Nincs költés az utolsó 30 napban.")
+            elif page == 2:
+                for index, row in enumerate(self.db.top_receipts(10), start=1):
+                    lines.append(
+                        f"{index:>2}. {pretty_date(row['receipt_date'])[:10]} · {money(row['total_amount']):>14} · "
+                        f"{int(row['articles_count'] or 0):>3} tétel · {row['store'] or '–'}"
+                    )
+            elif page == 3:
+                for index, row in enumerate(self.db.top_products(20), start=1):
+                    desc = str(row["description"] or "–")
+                    suffix = (
+                        f" · {int(row['receipt_count'] or 0)} blokk · "
+                        f"menny. {float(row['quantity'] or 0):g} · {money(row['spend'])}"
+                    )
+                    room = max(8, width - len(suffix) - 6)
+                    lines.append(f"{index:>2}. {desc[:room]}{suffix}")
+            else:
+                for index, row in enumerate(self.db.store_stats(50), start=1):
+                    lines.append(
+                        f"{index:>2}. {row['store_name']} · {int(row['receipt_count'] or 0)} blokk · "
+                        f"átlag {money(row['average_receipt'])} · összesen {money(row['spend'])}"
+                    )
+
+            if not lines:
+                lines = ["Nincs megjeleníthető adat."]
+            for row_index, line in enumerate(lines[:visible], start=content_top):
+                screen.addnstr(row_index, 1, line, width - 3)
+
+            screen.hline(height - 3, 0, curses.ACS_HLINE, width)
+            screen.addnstr(height - 2, 0, "←/→ lap · 1-5 közvetlen · H HTML riport · q vissza", width - 1)
+            screen.addnstr(height - 1, 0, " 1 havi · 2 napi · 3 top blokkok · 4 top termékek · 5 üzletek", width - 1, curses.A_DIM)
+            screen.refresh()
+
+            key = screen.getch()
+            if key in (ord("q"), ord("Q"), 27):
+                return
+            if key in (curses.KEY_RIGHT, ord("l")):
+                page = (page + 1) % len(titles)
+            elif key in (curses.KEY_LEFT, ord("j")):
+                page = (page - 1) % len(titles)
+            elif key in (ord("1"), ord("2"), ord("3"), ord("4"), ord("5")):
+                page = int(chr(key)) - 1
+            elif key in (ord("h"), ord("H")):
+                self._external_action(screen, lambda: open_html_report(self.db))
 
     def _receipt_list_view(self, screen: Any) -> None:
         receipts = self.db.receipts()
@@ -1233,6 +1671,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--full-sync", action="store_true", help="Teljes listaellenőrzés")
     parser.add_argument("--search", metavar="SZÖVEG", help="Nem interaktív keresés")
     parser.add_argument("--stats", action="store_true", help="Statisztika kiírása")
+    parser.add_argument("--report", action="store_true", help="HTML költési riport készítése és megnyitása")
     parser.add_argument("--clear-index", action="store_true", help="Helyi index törlése")
     parser.add_argument("--browser-info", action="store_true", help="v3 Firefox/Native Messaging bridge állapota")
     parser.add_argument("--extension-path", action="store_true", help="A v3 Firefox extension manifest útvonalának kiírása")
@@ -1269,6 +1708,9 @@ def main() -> int:
         if args.stats:
             print(json.dumps(database.stats(), ensure_ascii=False, indent=2))
             return 0
+        if args.report:
+            open_html_report(database)
+            return 0
         if args.search is not None:
             rows = database.search(args.search)
             for row in rows:
@@ -1278,7 +1720,7 @@ def main() -> int:
                 )
             return 0
         if not sys.stdin.isatty() or not sys.stdout.isatty():
-            print("A TUI-hoz terminál szükséges. Használható: --sync, --full-sync, --search, --stats, --login, --session-status, --browser-info")
+            print("A TUI-hoz terminál szükséges. Használható: --sync, --full-sync, --search, --stats, --report, --login, --session-status, --browser-info")
             return 2
         try:
             Tui(database).run()
